@@ -7,17 +7,13 @@ namespace Shubo\BogPayment\Gateway\Request;
 use Magento\Framework\Locale\ResolverInterface;
 use Magento\Framework\UrlInterface;
 use Magento\Payment\Gateway\Request\BuilderInterface;
-use Magento\Store\Model\StoreManagerInterface;
-use Shubo\BogPayment\Gateway\Config\Config;
 use Shubo\BogPayment\Gateway\Helper\SubjectReader;
 
 class InitializeRequestBuilder implements BuilderInterface
 {
     public function __construct(
         private readonly SubjectReader $subjectReader,
-        private readonly Config $config,
         private readonly UrlInterface $urlBuilder,
-        private readonly StoreManagerInterface $storeManager,
         private readonly ResolverInterface $localeResolver,
     ) {
     }
@@ -57,8 +53,7 @@ class InitializeRequestBuilder implements BuilderInterface
             ['_secure' => true]
         );
 
-        $storeId = (int) $order->getStoreId();
-        $currency = $this->storeManager->getStore($storeId)->getCurrentCurrencyCode();
+        $currency = $order->getCurrencyCode();
         $locale = $this->resolveLocale();
 
         return [
