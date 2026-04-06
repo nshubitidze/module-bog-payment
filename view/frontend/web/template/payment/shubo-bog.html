@@ -9,9 +9,17 @@
         </label>
     </div>
 
-    <div class="payment-method-content">
+    <div class="payment-method-content" data-bind="visible: isChecked() == getCode()">
+        <p style="margin-bottom: 15px; color: #666;">
+            <span data-bind="i18n: 'You will be securely redirected to Bank of Georgia to complete your payment.'"></span>
+        </p>
+
         <div class="payment-method-billing-address">
             <!-- ko foreach: $parent.getRegion('messages') -->
+            <!-- ko template: getTemplate() --><!-- /ko -->
+            <!-- /ko -->
+
+            <!-- ko foreach: $parent.getRegion('billingAddress') -->
             <!-- ko template: getTemplate() --><!-- /ko -->
             <!-- /ko -->
         </div>
@@ -26,8 +34,8 @@
             <div class="primary">
                 <button class="action primary checkout"
                         type="submit"
-                        data-bind="click: placeOrder, attr: {title: $t('Pay with BOG iPay')}, enable: (getCode() == isChecked())">
-                    <span data-bind="i18n: 'Pay with BOG iPay'"></span>
+                        data-bind="click: placeOrder, attr: {title: $t('Place Order')}, enable: (getCode() == isChecked())">
+                    <span data-bind="i18n: 'Place Order'"></span>
                 </button>
             </div>
         </div>
