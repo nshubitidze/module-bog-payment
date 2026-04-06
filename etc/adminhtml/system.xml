@@ -35,11 +35,6 @@
                     <label>API URL</label>
                     <comment><![CDATA[Base URL for BOG iPay API (e.g. https://ipay.ge/opay/api/v1)]]></comment>
                 </field>
-                <field id="currency" translate="label" type="text" sortOrder="70" showInDefault="1"
-                       showInWebsite="1" showInStore="0">
-                    <label>Currency</label>
-                    <comment><![CDATA[Currency code sent to BOG (default: GEL)]]></comment>
-                </field>
                 <field id="split_enabled" translate="label" type="select" sortOrder="80" showInDefault="1"
                        showInWebsite="1" showInStore="0">
                     <label>Enable Split Payments</label>

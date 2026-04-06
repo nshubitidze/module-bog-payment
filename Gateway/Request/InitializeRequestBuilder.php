@@ -4,9 +4,10 @@ declare(strict_types=1);
 
 namespace Shubo\BogPayment\Gateway\Request;
 
+use Magento\Framework\Locale\ResolverInterface;
 use Magento\Framework\UrlInterface;
 use Magento\Payment\Gateway\Request\BuilderInterface;
-use Magento\Sales\Model\Order;
+use Magento\Store\Model\StoreManagerInterface;
 use Shubo\BogPayment\Gateway\Config\Config;
 use Shubo\BogPayment\Gateway\Helper\SubjectReader;
 
@@ -16,6 +17,8 @@ class InitializeRequestBuilder implements BuilderInterface
         private readonly SubjectReader $subjectReader,
         private readonly Config $config,
         private readonly UrlInterface $urlBuilder,
+        private readonly StoreManagerInterface $storeManager,
+        private readonly ResolverInterface $localeResolver,
     ) {
     }
 
@@ -30,9 +33,6 @@ class InitializeRequestBuilder implements BuilderInterface
         $paymentDO = $this->subjectReader->readPayment($buildSubject);
         $order = $paymentDO->getOrder();
         $amount = $this->subjectReader->readAmount($buildSubject);
-
-        /** @var Order $orderModel */
-        $orderModel = $paymentDO->getPayment()->getOrder();
 
         $items = [];
         foreach ($order->getItems() as $item) {
@@ -57,19 +57,40 @@ class InitializeRequestBuilder implements BuilderInterface
             ['_secure' => true]
         );
 
+        $storeId = (int) $order->getStoreId();
+        $currency = $this->storeManager->getStore($storeId)->getCurrentCurrencyCode();
+        $locale = $this->resolveLocale();
+
         return [
             'intent' => 'CAPTURE',
             'items' => $items,
+            'locale' => $locale,
             'shop_order_id' => $order->getOrderIncrementId(),
             'redirect_urls' => [
                 'success' => $successUrl,
                 'fail' => $failUrl,
             ],
             'purchase_units' => [
-                'currency' => $this->config->getCurrency(),
+                'currency' => $currency,
                 'total_amount' => number_format($amount, 2, '.', ''),
             ],
             'callback_url' => $callbackUrl,
         ];
+    }
+
+    /**
+     * Map Magento locale to BOG-supported language code.
+     *
+     * BOG iPay supports: ka (Georgian), en (English).
+     */
+    private function resolveLocale(): string
+    {
+        $locale = $this->localeResolver->getLocale();
+        $language = substr($locale, 0, 2);
+
+        return match ($language) {
+            'ka' => 'ka',
+            default => 'en',
+        };
     }
 }

@@ -56,12 +56,14 @@ define([
 
             fullScreenLoader.startLoader();
 
+            var locale = config.locale || 'en';
+
             $.ajax({
                 url: config.createOrderUrl,
                 type: 'POST',
                 dataType: 'json',
                 contentType: 'application/json',
-                data: JSON.stringify({}),
+                data: JSON.stringify({locale: locale}),
                 success: function (response) {
                     fullScreenLoader.stopLoader();
 

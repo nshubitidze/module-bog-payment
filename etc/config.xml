@@ -19,7 +19,7 @@
                 <can_cancel>1</can_cancel>
                 <can_use_internal>0</can_use_internal>
                 <order_status>pending_payment</order_status>
-                <currency>GEL</currency>
+
                 <api_url>https://ipay.ge/opay/api/v1</api_url>
                 <environment>test</environment>
                 <split_enabled>0</split_enabled>

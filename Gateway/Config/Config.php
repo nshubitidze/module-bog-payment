@@ -18,7 +18,7 @@ class Config extends GatewayConfig
     private const KEY_CLIENT_ID = 'client_id';
     private const KEY_CLIENT_SECRET = 'client_secret';
     private const KEY_API_URL = 'api_url';
-    private const KEY_CURRENCY = 'currency';
+
     private const KEY_ENVIRONMENT = 'environment';
     private const KEY_SPLIT_ENABLED = 'split_enabled';
     private const KEY_DEBUG = 'debug';
@@ -56,11 +56,6 @@ class Config extends GatewayConfig
     public function getApiUrl(): string
     {
         return rtrim((string) $this->getValue(self::KEY_API_URL), '/');
-    }
-
-    public function getCurrency(): string
-    {
-        return (string) ($this->getValue(self::KEY_CURRENCY) ?: 'GEL');
     }
 
     public function getEnvironment(): string
