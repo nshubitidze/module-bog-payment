@@ -1,0 +1,31 @@
+<?xml version="1.0"?>
+<config xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+        xsi:noNamespaceSchemaLocation="urn:magento:module:Magento_Store:etc/config.xsd">
+    <default>
+        <payment>
+            <shubo_bog>
+                <model>ShuboBogPaymentFacade</model>
+                <title>BOG iPay</title>
+                <active>0</active>
+                <payment_action>authorize_capture</payment_action>
+                <is_gateway>1</is_gateway>
+                <can_use_checkout>1</can_use_checkout>
+                <can_authorize>0</can_authorize>
+                <can_capture>1</can_capture>
+                <can_capture_partial>0</can_capture_partial>
+                <can_refund>1</can_refund>
+                <can_refund_partial_per_invoice>1</can_refund_partial_per_invoice>
+                <can_void>0</can_void>
+                <can_cancel>1</can_cancel>
+                <can_use_internal>0</can_use_internal>
+                <order_status>pending_payment</order_status>
+                <currency>GEL</currency>
+                <api_url>https://ipay.ge/opay/api/v1</api_url>
+                <environment>test</environment>
+                <split_enabled>0</split_enabled>
+                <debug>0</debug>
+                <paymentInfoKeys>bog_order_id,bog_payment_id,bog_status</paymentInfoKeys>
+            </shubo_bog>
+        </payment>
+    </default>
+</config>

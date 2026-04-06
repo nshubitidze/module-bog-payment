@@ -1,0 +1,137 @@
+<?xml version="1.0"?>
+<config xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+        xsi:noNamespaceSchemaLocation="urn:magento:framework:ObjectManager/etc/config.xsd">
+
+    <preference for="Shubo\BogPayment\Api\Data\SplitPaymentDataInterface"
+                type="Shubo\BogPayment\Model\SplitPaymentData"/>
+
+    <!-- BOG Payment Gateway Config -->
+    <virtualType name="ShuboBogPaymentConfig" type="Magento\Payment\Gateway\Config\Config">
+        <arguments>
+            <argument name="methodCode" xsi:type="const">Shubo\BogPayment\Gateway\Config\Config::METHOD_CODE</argument>
+        </arguments>
+    </virtualType>
+
+    <type name="Shubo\BogPayment\Gateway\Config\Config">
+        <arguments>
+            <argument name="methodCode" xsi:type="const">Shubo\BogPayment\Gateway\Config\Config::METHOD_CODE</argument>
+        </arguments>
+    </type>
+
+    <!-- Logger -->
+    <virtualType name="ShuboBogPaymentLogger" type="Magento\Payment\Model\Method\Logger">
+        <arguments>
+            <argument name="config" xsi:type="object">ShuboBogPaymentConfig</argument>
+        </arguments>
+    </virtualType>
+
+    <!-- Payment Method Facade -->
+    <virtualType name="ShuboBogPaymentFacade" type="Magento\Payment\Model\Method\Adapter">
+        <arguments>
+            <argument name="code" xsi:type="const">Shubo\BogPayment\Gateway\Config\Config::METHOD_CODE</argument>
+            <argument name="formBlockType" xsi:type="string">Magento\Payment\Block\Form</argument>
+            <argument name="infoBlockType" xsi:type="string">Shubo\BogPayment\Block\Payment\Info</argument>
+            <argument name="valueHandlerPool" xsi:type="object">ShuboBogValueHandlerPool</argument>
+            <argument name="commandPool" xsi:type="object">ShuboBogCommandPool</argument>
+            <argument name="validatorPool" xsi:type="object">ShuboBogValidatorPool</argument>
+        </arguments>
+    </virtualType>
+
+    <!-- Value Handler Pool -->
+    <virtualType name="ShuboBogValueHandlerPool" type="Magento\Payment\Gateway\Config\ValueHandlerPool">
+        <arguments>
+            <argument name="handlers" xsi:type="array">
+                <item name="default" xsi:type="string">ShuboBogConfigValueHandler</item>
+            </argument>
+        </arguments>
+    </virtualType>
+
+    <virtualType name="ShuboBogConfigValueHandler" type="Magento\Payment\Gateway\Config\ConfigValueHandler">
+        <arguments>
+            <argument name="configInterface" xsi:type="object">ShuboBogPaymentConfig</argument>
+        </arguments>
+    </virtualType>
+
+    <!-- Validator Pool -->
+    <virtualType name="ShuboBogValidatorPool" type="Magento\Payment\Gateway\Validator\ValidatorPool">
+        <arguments>
+            <argument name="validators" xsi:type="array">
+                <item name="country" xsi:type="string">ShuboBogCountryValidator</item>
+            </argument>
+        </arguments>
+    </virtualType>
+
+    <virtualType name="ShuboBogCountryValidator" type="Magento\Payment\Gateway\Validator\CountryValidator">
+        <arguments>
+            <argument name="config" xsi:type="object">ShuboBogPaymentConfig</argument>
+        </arguments>
+    </virtualType>
+
+    <!-- Command Pool -->
+    <virtualType name="ShuboBogCommandPool" type="Magento\Payment\Gateway\Command\CommandPool">
+        <arguments>
+            <argument name="commands" xsi:type="array">
+                <item name="initialize" xsi:type="string">ShuboBogInitializeCommand</item>
+                <item name="refund" xsi:type="string">ShuboBogRefundCommand</item>
+            </argument>
+        </arguments>
+    </virtualType>
+
+    <!-- Initialize Command (Create BOG Order) -->
+    <virtualType name="ShuboBogInitializeCommand" type="Magento\Payment\Gateway\Command\GatewayCommand">
+        <arguments>
+            <argument name="requestBuilder" xsi:type="object">ShuboBogInitializeRequestBuilder</argument>
+            <argument name="transferFactory" xsi:type="object">Shubo\BogPayment\Gateway\Http\TransferFactory</argument>
+            <argument name="client" xsi:type="object">Shubo\BogPayment\Gateway\Http\Client\CreatePaymentClient</argument>
+            <argument name="handler" xsi:type="object">Shubo\BogPayment\Gateway\Response\InitializeHandler</argument>
+            <argument name="validator" xsi:type="object">Shubo\BogPayment\Gateway\Validator\ResponseValidator</argument>
+        </arguments>
+    </virtualType>
+
+    <virtualType name="ShuboBogInitializeRequestBuilder" type="Magento\Payment\Gateway\Request\BuilderComposite">
+        <arguments>
+            <argument name="builders" xsi:type="array">
+                <item name="initialize" xsi:type="string">Shubo\BogPayment\Gateway\Request\InitializeRequestBuilder</item>
+                <item name="split" xsi:type="string">Shubo\BogPayment\Gateway\Request\SplitDataBuilder</item>
+            </argument>
+        </arguments>
+    </virtualType>
+
+    <!-- Refund Command -->
+    <virtualType name="ShuboBogRefundCommand" type="Magento\Payment\Gateway\Command\GatewayCommand">
+        <arguments>
+            <argument name="requestBuilder" xsi:type="object">Shubo\BogPayment\Gateway\Request\RefundRequestBuilder</argument>
+            <argument name="transferFactory" xsi:type="object">Shubo\BogPayment\Gateway\Http\TransferFactory</argument>
+            <argument name="client" xsi:type="object">Shubo\BogPayment\Gateway\Http\Client\RefundClient</argument>
+            <argument name="handler" xsi:type="object">Shubo\BogPayment\Gateway\Response\RefundHandler</argument>
+            <argument name="validator" xsi:type="object">Shubo\BogPayment\Gateway\Validator\ResponseValidator</argument>
+        </arguments>
+    </virtualType>
+
+    <!-- Transfer Factory Config -->
+    <type name="Shubo\BogPayment\Gateway\Http\TransferFactory">
+        <arguments>
+            <argument name="config" xsi:type="object">Shubo\BogPayment\Gateway\Config\Config</argument>
+        </arguments>
+    </type>
+
+    <!-- HTTP Clients -->
+    <type name="Shubo\BogPayment\Gateway\Http\Client\CreatePaymentClient">
+        <arguments>
+            <argument name="logger" xsi:type="object">ShuboBogPaymentLogger</argument>
+        </arguments>
+    </type>
+
+    <type name="Shubo\BogPayment\Gateway\Http\Client\RefundClient">
+        <arguments>
+            <argument name="logger" xsi:type="object">ShuboBogPaymentLogger</argument>
+        </arguments>
+    </type>
+
+    <!-- Inject the BOG command pool into CreateOrder controller -->
+    <type name="Shubo\BogPayment\Controller\Payment\CreateOrder">
+        <arguments>
+            <argument name="commandPool" xsi:type="object">ShuboBogCommandPool</argument>
+        </arguments>
+    </type>
+</config>
