@@ -28,13 +28,13 @@ class OAuthTokenProvider
      *
      * @throws LocalizedException
      */
-    public function getAccessToken(): string
+    public function getAccessToken(?int $storeId = null): string
     {
         if ($this->isTokenValid() && $this->cachedToken !== null) {
             return $this->cachedToken;
         }
 
-        return $this->refreshToken();
+        return $this->refreshToken($storeId);
     }
 
     /**
@@ -42,16 +42,18 @@ class OAuthTokenProvider
      *
      * @throws LocalizedException
      */
-    public function refreshToken(): string
+    public function refreshToken(?int $storeId = null): string
     {
-        $clientId = $this->config->getClientId();
-        $clientSecret = $this->config->getClientSecret();
+        $clientId = $this->config->getClientId($storeId);
+        $clientSecret = $this->config->getClientSecret($storeId);
 
         if ($clientId === '' || $clientSecret === '') {
             throw new LocalizedException(
-                __('BOG iPay API credentials are not configured. Please set Client ID and Client Secret.')
+                __('BOG Payments API credentials are not configured. Please set Client ID and Client Secret.')
             );
         }
+
+        $tokenUrl = $this->config->getOAuthTokenUrl($storeId);
 
         $curl = $this->curlFactory->create();
         $curl->addHeader('Content-Type', 'application/x-www-form-urlencoded');
@@ -59,18 +61,23 @@ class OAuthTokenProvider
 
         $postData = http_build_query([
             'grant_type' => 'client_credentials',
-            'client_id' => $clientId,
-            'client_secret' => $clientSecret,
+        ]);
+
+        // Use Basic Auth with client_id:client_secret
+        $curl->setCredentials($clientId, $clientSecret);
+
+        $this->logger->debug('BOG OAuth token request', [
+            'url' => $tokenUrl,
         ]);
 
         try {
-            $curl->post($this->config->getOAuthTokenUrl(), $postData);
+            $curl->post($tokenUrl, $postData);
         } catch (\Exception $e) {
             $this->logger->error('BOG OAuth token request failed', [
                 'exception' => $e->getMessage(),
             ]);
             throw new LocalizedException(
-                __('Unable to authenticate with BOG iPay. Please try again later.')
+                __('Unable to authenticate with BOG Payments API. Please try again later.')
             );
         }
 
@@ -83,7 +90,7 @@ class OAuthTokenProvider
                 'response' => $responseBody,
             ]);
             throw new LocalizedException(
-                __('BOG iPay authentication failed. HTTP status: %1', $statusCode)
+                __('BOG Payments authentication failed. HTTP status: %1', $statusCode)
             );
         }
 
@@ -95,7 +102,7 @@ class OAuthTokenProvider
                 'response' => $responseBody,
             ]);
             throw new LocalizedException(
-                __('Invalid response from BOG iPay authentication endpoint.')
+                __('Invalid response from BOG Payments authentication endpoint.')
             );
         }
 

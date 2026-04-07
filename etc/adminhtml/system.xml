@@ -5,67 +5,144 @@
         <section id="payment">
             <group id="shubo_bog" translate="label comment" type="text" sortOrder="50" showInDefault="1"
                    showInWebsite="1" showInStore="1">
-                <label>BOG iPay (Bank of Georgia)</label>
-                <comment><![CDATA[Accept payments via Bank of Georgia iPay gateway.]]></comment>
-                <field id="active" translate="label" type="select" sortOrder="10" showInDefault="1"
-                       showInWebsite="1" showInStore="0">
+                <label>BOG Payments (Bank of Georgia)</label>
+                <comment><![CDATA[Accept payments via Bank of Georgia Payments API.]]></comment>
+
+                <field id="active" translate="label" type="select" sortOrder="10"
+                       showInDefault="1" showInWebsite="1" showInStore="0">
                     <label>Enabled</label>
                     <source_model>Magento\Config\Model\Config\Source\Yesno</source_model>
                 </field>
-                <field id="title" translate="label" type="text" sortOrder="20" showInDefault="1"
-                       showInWebsite="1" showInStore="1">
+
+                <field id="title" translate="label" type="text" sortOrder="20"
+                       showInDefault="1" showInWebsite="1" showInStore="1">
                     <label>Title</label>
                 </field>
-                <field id="environment" translate="label" type="select" sortOrder="30" showInDefault="1"
-                       showInWebsite="1" showInStore="0">
+
+                <field id="environment" translate="label" type="select" sortOrder="30"
+                       showInDefault="1" showInWebsite="1" showInStore="0">
                     <label>Environment</label>
                     <source_model>Shubo\BogPayment\Model\Source\Environment</source_model>
                 </field>
-                <field id="client_id" translate="label" type="text" sortOrder="40" showInDefault="1"
-                       showInWebsite="1" showInStore="0">
+
+                <field id="client_id" translate="label comment" type="text" sortOrder="40"
+                       showInDefault="1" showInWebsite="1" showInStore="0">
                     <label>Client ID</label>
+                    <comment>Your BOG Payments API client ID.</comment>
                 </field>
-                <field id="client_secret" translate="label" type="obscure" sortOrder="50" showInDefault="1"
-                       showInWebsite="1" showInStore="0">
+
+                <field id="client_secret" translate="label comment" type="obscure" sortOrder="50"
+                       showInDefault="1" showInWebsite="1" showInStore="0">
                     <label>Client Secret</label>
+                    <comment>Your BOG Payments API client secret.</comment>
                     <backend_model>Magento\Config\Model\Config\Backend\Encrypted</backend_model>
                 </field>
-                <field id="api_url" translate="label comment" type="text" sortOrder="60" showInDefault="1"
-                       showInWebsite="1" showInStore="0">
-                    <label>API URL</label>
-                    <comment><![CDATA[Base URL for BOG iPay API (e.g. https://ipay.ge/opay/api/v1)]]></comment>
+
+                <field id="payment_action_mode" translate="label comment" type="select" sortOrder="55"
+                       showInDefault="1" showInWebsite="1" showInStore="0">
+                    <label>Payment Action</label>
+                    <comment><![CDATA[<strong>Automatic Capture</strong>: charge the card and create invoice immediately.<br/><strong>Manual Capture</strong>: pre-authorize funds, then capture manually from admin.]]></comment>
+                    <source_model>Shubo\BogPayment\Model\Config\Source\PaymentAction</source_model>
                 </field>
-                <field id="split_enabled" translate="label" type="select" sortOrder="80" showInDefault="1"
-                       showInWebsite="1" showInStore="0">
+
+                <field id="api_url" translate="label comment" type="text" sortOrder="60"
+                       showInDefault="1" showInWebsite="1" showInStore="0">
+                    <label>API URL</label>
+                    <comment><![CDATA[Base URL for BOG Payments API (default: https://api.bog.ge/payments/v1)]]></comment>
+                </field>
+
+                <field id="oauth_url" translate="label comment" type="text" sortOrder="65"
+                       showInDefault="1" showInWebsite="1" showInStore="0">
+                    <label>OAuth URL</label>
+                    <comment><![CDATA[OAuth2 token endpoint URL. Leave empty to use default BOG OAuth endpoint.]]></comment>
+                </field>
+
+                <field id="payment_lifetime" translate="label comment" type="text" sortOrder="70"
+                       showInDefault="1" showInWebsite="1" showInStore="0">
+                    <label>Payment Lifetime (minutes)</label>
+                    <comment>How long the payment session stays valid. Default: 15 minutes. Min: 2, Max: 1440 (24 hours).</comment>
+                    <validate>validate-digits validate-greater-than-zero</validate>
+                </field>
+
+                <field id="payment_theme" translate="label comment" type="select" sortOrder="72"
+                       showInDefault="1" showInWebsite="1" showInStore="1">
+                    <label>Payment Page Theme</label>
+                    <comment>Theme for the BOG payment page.</comment>
+                    <source_model>Shubo\BogPayment\Model\Config\Source\PaymentTheme</source_model>
+                </field>
+
+                <field id="payment_methods" translate="label comment" type="multiselect" sortOrder="75"
+                       showInDefault="1" showInWebsite="1" showInStore="0">
+                    <label>Allowed Payment Methods</label>
+                    <comment>Select which payment methods customers can use on the BOG payment page.</comment>
+                    <source_model>Shubo\BogPayment\Model\Config\Source\PaymentMethod</source_model>
+                    <can_be_empty>0</can_be_empty>
+                </field>
+
+                <field id="split_enabled" translate="label comment" type="select" sortOrder="80"
+                       showInDefault="1" showInWebsite="1" showInStore="0">
                     <label>Enable Split Payments</label>
                     <source_model>Magento\Config\Model\Config\Source\Yesno</source_model>
-                    <comment><![CDATA[When enabled, payment split data will be sent to BOG for multi-vendor orders.]]></comment>
+                    <comment><![CDATA[Split order payments with other BOG merchants for multi-vendor orders.]]></comment>
                 </field>
-                <field id="debug" translate="label" type="select" sortOrder="90" showInDefault="1"
-                       showInWebsite="1" showInStore="0">
+
+                <field id="split_auto_settle" translate="label comment" type="select" sortOrder="82"
+                       showInDefault="1" showInWebsite="1" showInStore="0">
+                    <label>Auto-Settle After Approval</label>
+                    <comment>Automatically distribute funds to receivers as soon as the payment is approved.</comment>
+                    <source_model>Magento\Config\Model\Config\Source\Yesno</source_model>
+                    <depends>
+                        <field id="split_enabled">1</field>
+                    </depends>
+                </field>
+
+                <field id="split_receivers" translate="label comment" sortOrder="85"
+                       showInDefault="1" showInWebsite="1" showInStore="0">
+                    <label>Split Receivers</label>
+                    <comment><![CDATA[
+                        Add the BOG merchants who should receive a portion of each payment.
+                        <strong>The remainder always stays with your main account.</strong><br/><br/>
+                        <strong>Examples:</strong><br/>
+                        &bull; Give a partner 10%: add one receiver with Percentage = 10. Your account keeps 90%.<br/>
+                        &bull; Platform fee of 5 GEL per order: add one receiver (yourself) with Fixed Amount = 5.<br/>
+                        &bull; Two vendors, 60/40 split: add two receivers with Percentage = 60 and 40.
+                    ]]></comment>
+                    <frontend_model>Shubo\BogPayment\Block\Adminhtml\Form\Field\Receivers</frontend_model>
+                    <backend_model>Shubo\BogPayment\Model\Config\Backend\Receivers</backend_model>
+                    <depends>
+                        <field id="split_enabled">1</field>
+                    </depends>
+                </field>
+
+                <field id="debug" translate="label" type="select" sortOrder="90"
+                       showInDefault="1" showInWebsite="1" showInStore="0">
                     <label>Debug</label>
                     <source_model>Magento\Config\Model\Config\Source\Yesno</source_model>
                 </field>
-                <field id="order_status" translate="label" type="select" sortOrder="100" showInDefault="1"
-                       showInWebsite="1" showInStore="0">
+
+                <field id="order_status" translate="label" type="select" sortOrder="100"
+                       showInDefault="1" showInWebsite="1" showInStore="0">
                     <label>New Order Status</label>
                     <source_model>Magento\Sales\Model\Config\Source\Order\Status\NewStatus</source_model>
                 </field>
-                <field id="allowspecific" translate="label" type="allowspecific" sortOrder="110" showInDefault="1"
-                       showInWebsite="1" showInStore="0">
+
+                <field id="sort_order" translate="label" type="text" sortOrder="110"
+                       showInDefault="1" showInWebsite="1" showInStore="0">
+                    <label>Sort Order</label>
+                    <frontend_class>validate-number</frontend_class>
+                </field>
+
+                <field id="allowspecific" translate="label" type="allowspecific" sortOrder="120"
+                       showInDefault="1" showInWebsite="1" showInStore="0">
                     <label>Payment from Applicable Countries</label>
                     <source_model>Magento\Payment\Model\Config\Source\Allspecificcountries</source_model>
                 </field>
-                <field id="specificcountry" translate="label" type="multiselect" sortOrder="120" showInDefault="1"
-                       showInWebsite="1" showInStore="0">
+
+                <field id="specificcountry" translate="label" type="multiselect" sortOrder="130"
+                       showInDefault="1" showInWebsite="1" showInStore="0">
                     <label>Payment from Specific Countries</label>
                     <source_model>Magento\Directory\Model\Config\Source\Country</source_model>
                     <can_be_empty>1</can_be_empty>
-                </field>
-                <field id="sort_order" translate="label" type="text" sortOrder="130" showInDefault="1"
-                       showInWebsite="1" showInStore="0">
-                    <label>Sort Order</label>
-                    <frontend_class>validate-number</frontend_class>
                 </field>
             </group>
         </section>

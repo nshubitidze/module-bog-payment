@@ -18,10 +18,19 @@
         </arguments>
     </type>
 
-    <!-- Logger -->
-    <virtualType name="ShuboBogPaymentLogger" type="Magento\Payment\Model\Method\Logger">
+    <!-- Dedicated log file for BOG payment -->
+    <virtualType name="ShuboBogPaymentLogHandler" type="Magento\Framework\Logger\Handler\Base">
         <arguments>
-            <argument name="config" xsi:type="object">ShuboBogPaymentConfig</argument>
+            <argument name="fileName" xsi:type="string">/var/log/shubo_bog_payment.log</argument>
+        </arguments>
+    </virtualType>
+
+    <virtualType name="ShuboBogPaymentLogger" type="Magento\Framework\Logger\Monolog">
+        <arguments>
+            <argument name="name" xsi:type="string">shubo_bog_payment</argument>
+            <argument name="handlers" xsi:type="array">
+                <item name="system" xsi:type="object">ShuboBogPaymentLogHandler</item>
+            </argument>
         </arguments>
     </virtualType>
 
@@ -128,10 +137,78 @@
         </arguments>
     </type>
 
-    <!-- Inject the BOG command pool into CreateOrder controller -->
-    <type name="Shubo\BogPayment\Controller\Payment\CreateOrder">
+    <type name="Shubo\BogPayment\Gateway\Http\Client\StatusClient">
         <arguments>
-            <argument name="commandPool" xsi:type="object">ShuboBogCommandPool</argument>
+            <argument name="logger" xsi:type="object">ShuboBogPaymentLogger</argument>
+        </arguments>
+    </type>
+
+    <type name="Shubo\BogPayment\Gateway\Http\Client\CaptureClient">
+        <arguments>
+            <argument name="logger" xsi:type="object">ShuboBogPaymentLogger</argument>
+        </arguments>
+    </type>
+
+    <type name="Shubo\BogPayment\Gateway\Validator\CallbackValidator">
+        <arguments>
+            <argument name="logger" xsi:type="object">ShuboBogPaymentLogger</argument>
+        </arguments>
+    </type>
+
+    <type name="Shubo\BogPayment\Controller\Payment\Callback">
+        <arguments>
+            <argument name="logger" xsi:type="object">ShuboBogPaymentLogger</argument>
+        </arguments>
+    </type>
+
+    <type name="Shubo\BogPayment\Model\OAuthTokenProvider">
+        <arguments>
+            <argument name="logger" xsi:type="object">ShuboBogPaymentLogger</argument>
+        </arguments>
+    </type>
+
+    <!-- Frontend Payment Controllers -->
+    <type name="Shubo\BogPayment\Controller\Payment\Initiate">
+        <arguments>
+            <argument name="logger" xsi:type="object">ShuboBogPaymentLogger</argument>
+        </arguments>
+    </type>
+
+    <type name="Shubo\BogPayment\Controller\Payment\ReturnAction">
+        <arguments>
+            <argument name="logger" xsi:type="object">ShuboBogPaymentLogger</argument>
+        </arguments>
+    </type>
+
+    <type name="Shubo\BogPayment\Controller\Payment\Confirm">
+        <arguments>
+            <argument name="logger" xsi:type="object">ShuboBogPaymentLogger</argument>
+        </arguments>
+    </type>
+
+    <!-- Cron -->
+    <type name="Shubo\BogPayment\Cron\PendingOrderReconciler">
+        <arguments>
+            <argument name="logger" xsi:type="object">ShuboBogPaymentLogger</argument>
+        </arguments>
+    </type>
+
+    <!-- Admin Controllers -->
+    <type name="Shubo\BogPayment\Controller\Adminhtml\Order\CheckStatus">
+        <arguments>
+            <argument name="logger" xsi:type="object">ShuboBogPaymentLogger</argument>
+        </arguments>
+    </type>
+
+    <type name="Shubo\BogPayment\Controller\Adminhtml\Order\Capture">
+        <arguments>
+            <argument name="logger" xsi:type="object">ShuboBogPaymentLogger</argument>
+        </arguments>
+    </type>
+
+    <type name="Shubo\BogPayment\Controller\Adminhtml\Order\VoidPayment">
+        <arguments>
+            <argument name="logger" xsi:type="object">ShuboBogPaymentLogger</argument>
         </arguments>
     </type>
 </config>

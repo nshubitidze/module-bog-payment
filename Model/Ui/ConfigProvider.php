@@ -34,21 +34,23 @@ class ConfigProvider implements ConfigProviderInterface
                 self::CODE => [
                     'isActive' => true,
                     'title' => $this->config->getTitle(),
-                    'createOrderUrl' => $this->urlBuilder->getUrl(
-                        'shubo_bog/payment/createOrder',
+                    'initiateUrl' => $this->urlBuilder->getUrl(
+                        'shubo_bog/payment/initiate',
                         ['_secure' => true]
                     ),
                     'environment' => $this->config->getEnvironment(),
                     'locale' => $this->resolveLocale(),
+                    'theme' => $this->config->getPaymentTheme(),
+                    'paymentMethods' => $this->config->getAllowedPaymentMethods(),
                 ],
             ],
         ];
     }
 
     /**
-     * Map Magento locale to BOG iPay-supported language code.
+     * Map Magento locale to BOG Payments-supported language code.
      *
-     * BOG iPay supports: ka (Georgian), en (English).
+     * BOG Payments API supports: ka (Georgian), en (English).
      */
     private function resolveLocale(): string
     {

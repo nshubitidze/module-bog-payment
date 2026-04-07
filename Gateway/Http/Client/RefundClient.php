@@ -8,7 +8,7 @@ use Magento\Framework\Exception\LocalizedException;
 use Magento\Framework\HTTP\Client\CurlFactory;
 use Magento\Payment\Gateway\Http\ClientInterface;
 use Magento\Payment\Gateway\Http\TransferInterface;
-use Magento\Payment\Model\Method\Logger;
+use Psr\Log\LoggerInterface;
 use Shubo\BogPayment\Gateway\Config\Config;
 use Shubo\BogPayment\Model\OAuthTokenProvider;
 
@@ -18,12 +18,12 @@ class RefundClient implements ClientInterface
         private readonly CurlFactory $curlFactory,
         private readonly OAuthTokenProvider $tokenProvider,
         private readonly Config $config,
-        private readonly Logger $logger,
+        private readonly LoggerInterface $logger,
     ) {
     }
 
     /**
-     * Send refund request to BOG iPay API.
+     * Send refund request to BOG Payments API.
      *
      * @param TransferInterface $transferObject
      * @return array<string, mixed>
@@ -34,9 +34,9 @@ class RefundClient implements ClientInterface
         /** @var array<string, mixed> $body */
         $body = $transferObject->getBody();
 
-        $this->logger->debug([
-            'request_url' => $this->config->getRefundUrl(),
-            'request_body' => $body,
+        $this->logger->debug('BOG refund request', [
+            'url' => $this->config->getRefundUrl(),
+            'body' => $body,
         ]);
 
         $accessToken = $this->tokenProvider->getAccessToken();
@@ -50,21 +50,20 @@ class RefundClient implements ClientInterface
         try {
             $curl->post($this->config->getRefundUrl(), $jsonBody);
         } catch (\Exception $e) {
-            $this->logger->debug([
-                'error' => 'BOG refund HTTP request failed',
+            $this->logger->error('BOG refund HTTP request failed', [
                 'exception' => $e->getMessage(),
             ]);
             throw new LocalizedException(
-                __('Unable to process refund via BOG iPay. Please try again later.')
+                __('Unable to process refund via BOG Payments API. Please try again later.')
             );
         }
 
         $statusCode = $curl->getStatus();
         $responseBody = $curl->getBody();
 
-        $this->logger->debug([
-            'response_status' => $statusCode,
-            'response_body' => $responseBody,
+        $this->logger->debug('BOG refund response', [
+            'status' => $statusCode,
+            'body' => $responseBody,
         ]);
 
         /** @var array<string, mixed>|null $response */
@@ -72,7 +71,7 @@ class RefundClient implements ClientInterface
 
         if (!is_array($response)) {
             throw new LocalizedException(
-                __('Invalid refund response from BOG iPay API.')
+                __('Invalid refund response from BOG Payments API.')
             );
         }
 

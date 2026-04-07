@@ -16,8 +16,16 @@ class InitializeHandler implements HandlerInterface
     }
 
     /**
-     * Handle response from BOG create-order API.
-     * Store BOG order ID and payment URL in additional information.
+     * Handle response from BOG Payments create-order API.
+     *
+     * New API response format:
+     * {
+     *   "id": "...",
+     *   "_links": {
+     *     "redirect": {"href": "..."},
+     *     "details": {"href": "..."}
+     *   }
+     * }
      *
      * @param array<string, mixed> $handlingSubject
      * @param array<string, mixed> $response
@@ -33,21 +41,19 @@ class InitializeHandler implements HandlerInterface
             $payment->setAdditionalInformation('bog_order_id', (string) $response['id']);
         }
 
-        if (isset($response['payment_id'])) {
-            $payment->setAdditionalInformation('bog_payment_id', (string) $response['payment_id']);
-        }
-
-        if (isset($response['links']['redirect']['href'])) {
-            $payment->setAdditionalInformation(
-                'bog_redirect_url',
-                (string) $response['links']['redirect']['href']
-            );
-        }
-
+        // New API: _links.redirect.href
         if (isset($response['_links']['redirect']['href'])) {
             $payment->setAdditionalInformation(
                 'bog_redirect_url',
                 (string) $response['_links']['redirect']['href']
+            );
+        }
+
+        // Store details link for status lookups
+        if (isset($response['_links']['details']['href'])) {
+            $payment->setAdditionalInformation(
+                'bog_details_url',
+                (string) $response['_links']['details']['href']
             );
         }
 

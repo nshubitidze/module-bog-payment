@@ -5,9 +5,8 @@
         <payment>
             <shubo_bog>
                 <model>ShuboBogPaymentFacade</model>
-                <title>BOG iPay</title>
+                <title>BOG Payments</title>
                 <active>0</active>
-                <payment_action>authorize_capture</payment_action>
                 <is_gateway>1</is_gateway>
                 <can_use_checkout>1</can_use_checkout>
                 <can_authorize>0</can_authorize>
@@ -15,16 +14,24 @@
                 <can_capture_partial>0</can_capture_partial>
                 <can_refund>1</can_refund>
                 <can_refund_partial_per_invoice>1</can_refund_partial_per_invoice>
-                <can_void>0</can_void>
+                <can_void>1</can_void>
                 <can_cancel>1</can_cancel>
                 <can_use_internal>0</can_use_internal>
                 <order_status>pending_payment</order_status>
 
-                <api_url>https://ipay.ge/opay/api/v1</api_url>
+                <api_url>https://api.bog.ge/payments/v1</api_url>
+                <oauth_url>https://oauth2.bog.ge/auth/realms/bog/protocol/openid-connect/token</oauth_url>
                 <environment>test</environment>
+                <payment_action_mode>automatic</payment_action_mode>
+                <payment_lifetime>15</payment_lifetime>
+                <payment_theme>light</payment_theme>
+                <payment_methods>card</payment_methods>
                 <split_enabled>0</split_enabled>
+                <split_auto_settle>0</split_auto_settle>
+                <split_receivers></split_receivers>
                 <debug>0</debug>
-                <paymentInfoKeys>bog_order_id,bog_payment_id,bog_status</paymentInfoKeys>
+                <sort_order>50</sort_order>
+                <paymentInfoKeys>bog_order_id,bog_status,bog_details_url,bog_card_type,bog_pan,bog_payment_method</paymentInfoKeys>
             </shubo_bog>
         </payment>
     </default>

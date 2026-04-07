@@ -2,16 +2,14 @@ define([
     'Magento_Checkout/js/view/payment/default',
     'jquery',
     'Magento_Checkout/js/model/full-screen-loader',
-    'Magento_Checkout/js/action/place-order',
     'Magento_Checkout/js/model/payment/additional-validators',
     'mage/url'
-], function (Component, $, fullScreenLoader, placeOrderAction, additionalValidators, urlBuilder) {
+], function (Component, $, fullScreenLoader, additionalValidators, urlBuilder) {
     'use strict';
 
     return Component.extend({
         defaults: {
-            template: 'Shubo_BogPayment/payment/shubo-bog',
-            redirectAfterPlaceOrder: false
+            template: 'Shubo_BogPayment/payment/shubo-bog'
         },
 
         /**
@@ -37,52 +35,53 @@ define([
         getTitle: function () {
             var config = window.checkoutConfig.payment.shubo_bog;
 
-            return config ? config.title : 'BOG iPay';
+            return config ? config.title : 'BOG Payments';
         },
 
         /**
-         * After place order - create BOG order and redirect to iPay
+         * Override placeOrder to call our initiate endpoint instead of
+         * creating a Magento order. No order is created until the
+         * customer completes payment at BOG and returns.
+         *
+         * @param {Object} data
+         * @param {Event} event
+         * @returns {boolean}
          */
-        afterPlaceOrder: function () {
+        placeOrder: function (data, event) {
             var self = this;
-            var config = window.checkoutConfig.payment.shubo_bog;
 
-            if (!config || !config.createOrderUrl) {
-                self.messageContainer.addErrorMessage({
-                    message: 'Payment configuration error. Please try again.'
-                });
-                return;
+            if (event) {
+                event.preventDefault();
+            }
+
+            if (!this.validate() || !additionalValidators.validate()) {
+                return false;
             }
 
             fullScreenLoader.startLoader();
 
-            var locale = config.locale || 'en';
-
             $.ajax({
-                url: config.createOrderUrl,
+                url: urlBuilder.build('shubo_bog/payment/initiate'),
                 type: 'POST',
                 dataType: 'json',
-                contentType: 'application/json',
-                data: JSON.stringify({locale: locale}),
-                success: function (response) {
-                    fullScreenLoader.stopLoader();
-
-                    if (response.success && response.redirect_url) {
-                        // Redirect to BOG iPay payment page
-                        window.location.href = response.redirect_url;
-                    } else {
-                        self.messageContainer.addErrorMessage({
-                            message: response.message || 'Unable to initialize payment. Please try again.'
-                        });
-                    }
-                },
-                error: function () {
+                data: { form_key: window.FORM_KEY || '' }
+            }).done(function (response) {
+                if (response.success && response.redirect_url) {
+                    window.location.href = response.redirect_url;
+                } else {
                     fullScreenLoader.stopLoader();
                     self.messageContainer.addErrorMessage({
-                        message: 'An error occurred while connecting to the payment gateway. Please try again.'
+                        message: response.message || 'Unable to initiate payment.'
                     });
                 }
+            }).fail(function () {
+                fullScreenLoader.stopLoader();
+                self.messageContainer.addErrorMessage({
+                    message: 'Unable to connect to payment service.'
+                });
             });
+
+            return false;
         },
 
         /**

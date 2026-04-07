@@ -7,6 +7,7 @@ namespace Shubo\BogPayment\Gateway\Request;
 use Magento\Framework\Locale\ResolverInterface;
 use Magento\Framework\UrlInterface;
 use Magento\Payment\Gateway\Request\BuilderInterface;
+use Shubo\BogPayment\Gateway\Config\Config;
 use Shubo\BogPayment\Gateway\Helper\SubjectReader;
 
 class InitializeRequestBuilder implements BuilderInterface
@@ -15,11 +16,15 @@ class InitializeRequestBuilder implements BuilderInterface
         private readonly SubjectReader $subjectReader,
         private readonly UrlInterface $urlBuilder,
         private readonly ResolverInterface $localeResolver,
+        private readonly Config $config,
     ) {
     }
 
     /**
-     * Build the BOG create-order request payload.
+     * Build the BOG Payments API create-order request payload.
+     *
+     * New API structure uses purchase_units.basket instead of items,
+     * capture mode instead of intent, and adds ttl + payment_method.
      *
      * @param array<string, mixed> $buildSubject
      * @return array<string, mixed>
@@ -30,13 +35,13 @@ class InitializeRequestBuilder implements BuilderInterface
         $order = $paymentDO->getOrder();
         $amount = $this->subjectReader->readAmount($buildSubject);
 
-        $items = [];
+        $basket = [];
         foreach ($order->getItems() as $item) {
-            $items[] = [
-                'amount' => number_format((float) $item->getPrice(), 2, '.', ''),
-                'description' => mb_substr($item->getName() ?? '', 0, 255),
-                'quantity' => (string) ((int) $item->getQtyOrdered()),
+            $basket[] = [
                 'product_id' => $item->getSku() ?? '',
+                'description' => mb_substr($item->getName() ?? '', 0, 255),
+                'quantity' => (int) $item->getQtyOrdered(),
+                'unit_price' => round((float) $item->getPrice(), 2),
             ];
         }
 
@@ -45,7 +50,7 @@ class InitializeRequestBuilder implements BuilderInterface
             ['_secure' => true]
         );
         $successUrl = $this->urlBuilder->getUrl(
-            'checkout/onepage/success',
+            'shubo_bog/payment/return',
             ['_secure' => true]
         );
         $failUrl = $this->urlBuilder->getUrl(
@@ -55,28 +60,34 @@ class InitializeRequestBuilder implements BuilderInterface
 
         $currency = $order->getCurrencyCode();
         $locale = $this->resolveLocale();
+        $captureMode = $this->config->getPaymentActionMode();
+        $ttl = $this->config->getPaymentLifetime();
+        $paymentMethods = $this->config->getAllowedPaymentMethods();
 
         return [
-            'intent' => 'CAPTURE',
-            'items' => $items,
-            'locale' => $locale,
-            'shop_order_id' => $order->getOrderIncrementId(),
+            'callback_url' => $callbackUrl,
+            'external_order_id' => $order->getOrderIncrementId(),
+            'capture' => $captureMode,
+            'ttl' => $ttl,
+            'payment_method' => $paymentMethods,
             'redirect_urls' => [
                 'success' => $successUrl,
                 'fail' => $failUrl,
             ],
             'purchase_units' => [
                 'currency' => $currency,
-                'total_amount' => number_format($amount, 2, '.', ''),
+                'total_amount' => round($amount, 2),
+                'basket' => $basket,
             ],
-            'callback_url' => $callbackUrl,
+            // Internal metadata — stripped by CreatePaymentClient before sending
+            '__locale' => $locale,
         ];
     }
 
     /**
      * Map Magento locale to BOG-supported language code.
      *
-     * BOG iPay supports: ka (Georgian), en (English).
+     * BOG Payments API supports: ka (Georgian), en (English).
      */
     private function resolveLocale(): string
     {

@@ -19,19 +19,22 @@ class Info extends PaymentInfo
         $transport = parent::_prepareSpecificInformation($transport);
         $info = $this->getInfo();
 
-        $bogOrderId = $info->getAdditionalInformation('bog_order_id');
-        if ($bogOrderId) {
-            $this->addToTransport($transport, (string) __('BOG Order ID'), (string) $bogOrderId);
-        }
+        $displayFields = [
+            'bog_order_id' => 'BOG Order ID',
+            'bog_status' => 'BOG Status',
+            'bog_card_type' => 'Card Type',
+            'bog_pan' => 'Card Number',
+            'bog_payment_method' => 'Payment Method',
+            'bog_payment_hash' => 'Payment Hash',
+            'bog_details_url' => 'Details URL',
+            'capture_status' => 'Capture Status',
+        ];
 
-        $bogPaymentId = $info->getAdditionalInformation('bog_payment_id');
-        if ($bogPaymentId) {
-            $this->addToTransport($transport, (string) __('BOG Payment ID'), (string) $bogPaymentId);
-        }
-
-        $bogStatus = $info->getAdditionalInformation('bog_status');
-        if ($bogStatus) {
-            $this->addToTransport($transport, (string) __('BOG Status'), (string) $bogStatus);
+        foreach ($displayFields as $key => $label) {
+            $value = $info->getAdditionalInformation($key);
+            if ($value !== null && $value !== '') {
+                $this->addToTransport($transport, (string) __($label), (string) $value);
+            }
         }
 
         return $transport;

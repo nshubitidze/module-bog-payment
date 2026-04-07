@@ -34,7 +34,7 @@ class ResponseValidator extends AbstractValidator
         $errorCodes = [];
 
         if (!$isValid) {
-            $errorMessages[] = (string) __('BOG iPay API returned an error. HTTP status: %1', $httpStatus);
+            $errorMessages[] = (string) __('BOG Payments API returned an error. HTTP status: %1', $httpStatus);
             $errorCodes[] = $httpStatus;
 
             if (isset($response['message'])) {
@@ -43,6 +43,11 @@ class ResponseValidator extends AbstractValidator
 
             if (isset($response['error'])) {
                 $errorMessages[] = (string) $response['error'];
+            }
+
+            // New API may return error_description
+            if (isset($response['error_description'])) {
+                $errorMessages[] = (string) $response['error_description'];
             }
         }
 

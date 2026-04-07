@@ -1,7 +1,8 @@
 <?xml version="1.0"?>
 <config xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
         xsi:noNamespaceSchemaLocation="urn:magento:framework:Event/etc/events.xsd">
-    <!-- Split payment events are dispatched programmatically in SplitDataBuilder.
-         External modules register observers for shubo_bog_payment_split_before
-         in their own events.xml to provide split payment data. -->
+    <event name="sales_order_place_after">
+        <observer name="shubo_bog_set_pending_payment"
+                  instance="Shubo\BogPayment\Observer\SetPendingPaymentState"/>
+    </event>
 </config>
