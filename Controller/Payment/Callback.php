@@ -15,16 +15,16 @@ use Magento\Sales\Api\OrderRepositoryInterface;
 use Magento\Sales\Model\Order;
 use Magento\Sales\Model\Order\Email\Sender\OrderSender;
 use Magento\Sales\Model\Order\Invoice;
+use Magento\Sales\Model\Order\Payment;
 use Magento\Sales\Model\ResourceModel\Order\CollectionFactory as OrderCollectionFactory;
 use Magento\Sales\Model\Service\InvoiceService;
 use Psr\Log\LoggerInterface;
-use Shubo\BogPayment\Gateway\Config\Config;
 use Shubo\BogPayment\Gateway\Validator\CallbackValidator;
 
 class Callback implements HttpPostActionInterface, CsrfAwareActionInterface
 {
     public function __construct(
-        private readonly RequestInterface $request,
+        private readonly \Magento\Framework\App\Request\Http $request,
         private readonly RawFactory $rawFactory,
         private readonly CallbackValidator $callbackValidator,
         private readonly OrderCollectionFactory $orderCollectionFactory,
@@ -33,7 +33,6 @@ class Callback implements HttpPostActionInterface, CsrfAwareActionInterface
         private readonly TransactionFactory $transactionFactory,
         private readonly OrderSender $orderSender,
         private readonly LoggerInterface $logger,
-        private readonly Config $config,
     ) {
     }
 
@@ -157,21 +156,28 @@ class Callback implements HttpPostActionInterface, CsrfAwareActionInterface
      */
     private function processSuccessfulPayment(Order $order, string $bogOrderId, array $validation): void
     {
-        $payment = $order->getPayment();
-        if ($payment === null) {
+        $orderPayment = $order->getPayment();
+        if ($orderPayment === null) {
             $this->logger->error('BOG callback: order has no payment', [
                 'order_id' => $order->getIncrementId(),
             ]);
             return;
         }
 
+        /** @var Payment $payment */
+        $payment = $orderPayment;
+
         // Update payment additional information
-        $payment->setAdditionalInformation('bog_status', $validation['status']);
-        $payment->setAdditionalInformation('bog_order_id', $bogOrderId);
+        $additionalInfo = $payment->getAdditionalInformation();
+        $additionalInfo = is_array($additionalInfo) ? $additionalInfo : [];
+        $additionalInfo['bog_status'] = $validation['status'];
+        $additionalInfo['bog_order_id'] = $bogOrderId;
 
         if (isset($validation['data']['payment_id'])) {
-            $payment->setAdditionalInformation('bog_payment_id', (string) $validation['data']['payment_id']);
+            $additionalInfo['bog_payment_id'] = (string) $validation['data']['payment_id'];
         }
+
+        $payment->setAdditionalInformation($additionalInfo);
 
         $payment->setTransactionId($bogOrderId);
         $payment->setIsTransactionClosed(true);

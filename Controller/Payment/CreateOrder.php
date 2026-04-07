@@ -6,12 +6,12 @@ namespace Shubo\BogPayment\Controller\Payment;
 
 use Magento\Checkout\Model\Session as CheckoutSession;
 use Magento\Framework\App\Action\HttpPostActionInterface;
-use Magento\Framework\App\RequestInterface;
 use Magento\Framework\Controller\Result\JsonFactory;
 use Magento\Framework\Controller\ResultInterface;
 use Magento\Framework\Exception\LocalizedException;
 use Magento\Payment\Gateway\Command\CommandPoolInterface;
 use Magento\Payment\Gateway\Data\PaymentDataObjectFactory;
+use Magento\Payment\Model\InfoInterface;
 use Magento\Sales\Api\OrderRepositoryInterface;
 use Psr\Log\LoggerInterface;
 
@@ -24,7 +24,6 @@ class CreateOrder implements HttpPostActionInterface
         private readonly PaymentDataObjectFactory $paymentDataObjectFactory,
         private readonly OrderRepositoryInterface $orderRepository,
         private readonly LoggerInterface $logger,
-        private readonly RequestInterface $request,
     ) {
     }
 
@@ -50,6 +49,13 @@ class CreateOrder implements HttpPostActionInterface
                 ]);
             }
 
+            if (!$payment instanceof InfoInterface) {
+                return $result->setData([
+                    'success' => false,
+                    'message' => (string) __('Payment object is incompatible.'),
+                ]);
+            }
+
             $paymentDataObject = $this->paymentDataObjectFactory->create($payment);
 
             $this->commandPool->get('initialize')->execute([
@@ -60,8 +66,10 @@ class CreateOrder implements HttpPostActionInterface
             // Reload payment to get updated additional information
             $this->orderRepository->save($order);
 
-            $redirectUrl = $payment->getAdditionalInformation('bog_redirect_url');
-            $bogOrderId = $payment->getAdditionalInformation('bog_order_id');
+            $additionalInfo = $payment->getAdditionalInformation();
+            $additionalInfo = is_array($additionalInfo) ? $additionalInfo : [];
+            $redirectUrl = $additionalInfo['bog_redirect_url'] ?? null;
+            $bogOrderId = $additionalInfo['bog_order_id'] ?? null;
 
             return $result->setData([
                 'success' => true,

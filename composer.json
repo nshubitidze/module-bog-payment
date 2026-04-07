@@ -2,7 +2,7 @@
     "name": "shubo/module-bog-payment",
     "description": "Bank of Georgia (BOG) iPay payment integration for Duka marketplace",
     "type": "magento2-module",
-    "license": "proprietary",
+    "license": "Apache-2.0",
     "require": {
         "php": ">=8.4",
         "magento/framework": "*",

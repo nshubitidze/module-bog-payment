@@ -30,8 +30,7 @@ class OAuthTokenProvider
      */
     public function getAccessToken(): string
     {
-        if ($this->isTokenValid()) {
-            /** @var string $this->cachedToken */
+        if ($this->isTokenValid() && $this->cachedToken !== null) {
             return $this->cachedToken;
         }
 
@@ -56,7 +55,7 @@ class OAuthTokenProvider
 
         $curl = $this->curlFactory->create();
         $curl->addHeader('Content-Type', 'application/x-www-form-urlencoded');
-        $curl->setOption(CURLOPT_TIMEOUT, 30);
+        $curl->setOptions([CURLOPT_TIMEOUT => 30]);
 
         $postData = http_build_query([
             'grant_type' => 'client_credentials',

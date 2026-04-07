@@ -41,7 +41,7 @@ class CallbackValidator
         $curl = $this->curlFactory->create();
         $curl->addHeader('Authorization', 'Bearer ' . $accessToken);
         $curl->addHeader('Content-Type', 'application/json');
-        $curl->setOption(CURLOPT_TIMEOUT, 30);
+        $curl->setOptions([CURLOPT_TIMEOUT => 30]);
 
         try {
             $curl->get($statusUrl);

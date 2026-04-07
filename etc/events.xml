@@ -1,5 +1,7 @@
 <?xml version="1.0"?>
 <config xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
         xsi:noNamespaceSchemaLocation="urn:magento:framework:Event/etc/events.xsd">
-    <!-- Event dispatched before split data is added to BOG payment request -->
+    <!-- Split payment events are dispatched programmatically in SplitDataBuilder.
+         External modules register observers for shubo_bog_payment_split_before
+         in their own events.xml to provide split payment data. -->
 </config>

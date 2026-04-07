@@ -43,7 +43,7 @@ class CreatePaymentClient implements ClientInterface
         $curl = $this->curlFactory->create();
         $curl->addHeader('Content-Type', 'application/json');
         $curl->addHeader('Authorization', 'Bearer ' . $accessToken);
-        $curl->setOption(CURLOPT_TIMEOUT, 60);
+        $curl->setOptions([CURLOPT_TIMEOUT => 60]);
 
         $jsonBody = json_encode($body, JSON_THROW_ON_ERROR);
 
