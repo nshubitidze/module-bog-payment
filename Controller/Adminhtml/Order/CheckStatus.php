@@ -23,7 +23,7 @@ use Shubo\BogPayment\Gateway\Http\Client\StatusClient;
  */
 class CheckStatus extends Action
 {
-    public const ADMIN_RESOURCE = 'Magento_Sales::actions_edit';
+    public const ADMIN_RESOURCE = 'Shubo_BogPayment::check_status';
 
     public function __construct(
         Context $context,

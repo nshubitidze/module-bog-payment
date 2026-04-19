@@ -16,6 +16,7 @@ use Psr\Log\LoggerInterface;
 use Shubo\BogPayment\Gateway\Config\Config;
 use Shubo\BogPayment\Gateway\Http\Client\StatusClient;
 use Shubo\BogPayment\Gateway\Validator\CallbackValidator;
+use Shubo\BogPayment\Service\PaymentLock;
 
 /**
  * Confirms a BOG payment by checking the actual status via the API.
@@ -35,6 +36,7 @@ class Confirm implements HttpPostActionInterface
         private readonly Config $config,
         private readonly OrderSender $orderSender,
         private readonly LoggerInterface $logger,
+        private readonly PaymentLock $paymentLock,
     ) {
     }
 
@@ -97,8 +99,19 @@ class Confirm implements HttpPostActionInterface
                 ]);
             }
 
-            $this->processApproval($order, $payment, $statusResponse, $storeId);
-            $this->orderRepository->save($order);
+            // BUG-BOG-6: serialize with Callback + ReturnAction. Re-read state
+            // inside the lock so a concurrent handler that already moved the
+            // order to processing isn't re-captured.
+            $this->paymentLock->withLock($bogOrderId, function () use ($order, $payment, $statusResponse, $storeId): void {
+                if ($order->getState() === Order::STATE_PROCESSING) {
+                    $this->logger->info('BOG Confirm: order already processing inside lock, skipping', [
+                        'order_id' => $order->getIncrementId(),
+                    ]);
+                    return;
+                }
+                $this->processApproval($order, $payment, $statusResponse, $storeId);
+                $this->orderRepository->save($order);
+            });
 
             return $result->setData(['success' => true]);
         } catch (\Exception $e) {

@@ -20,7 +20,7 @@ use Shubo\BogPayment\Gateway\Http\Client\CaptureClient;
  */
 class Capture extends Action
 {
-    public const ADMIN_RESOURCE = 'Magento_Sales::actions_edit';
+    public const ADMIN_RESOURCE = 'Shubo_BogPayment::capture';
 
     public function __construct(
         Context $context,

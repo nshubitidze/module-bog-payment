@@ -76,7 +76,9 @@ PEM;
 
                 /** @var array<string, mixed> $callbackData */
                 $callbackData = json_decode($callbackBody, true) ?: [];
-                $paymentStatus = strtolower((string) ($callbackData['order_status']['key'] ?? ''));
+                // BUG-BOG-2: the new BOG Payments API wraps the receipt under
+                // a top-level `body` key. Unwrap before reading order_status.
+                $paymentStatus = $this->extractOrderStatusKey($callbackData);
                 $isValid = in_array($paymentStatus, [self::STATUS_COMPLETED, self::STATUS_CAPTURED], true);
 
                 return [
@@ -93,6 +95,35 @@ PEM;
 
         // Fallback: verify via BOG Status/Receipt API
         return $this->validateViaStatusApi($bogOrderId, $storeId);
+    }
+
+    /**
+     * Extract order_status.key from a BOG payload, supporting both the new
+     * API's nested `body.order_status.key` shape and the legacy flat
+     * `order_status.key` shape. Falls through to a top-level `status` string
+     * for older iPay responses.
+     *
+     * BUG-BOG-2 fix. Returns a lowercased status string, or '' if no key
+     * could be resolved.
+     *
+     * @param array<string, mixed> $payload
+     */
+    private function extractOrderStatusKey(array $payload): string
+    {
+        $container = is_array($payload['body'] ?? null) ? $payload['body'] : $payload;
+
+        if (
+            is_array($container['order_status'] ?? null)
+            && isset($container['order_status']['key'])
+        ) {
+            return strtolower((string) $container['order_status']['key']);
+        }
+
+        if (isset($container['status']) && !is_array($container['status'])) {
+            return strtolower((string) $container['status']);
+        }
+
+        return '';
     }
 
     /**
@@ -140,7 +171,8 @@ PEM;
             );
         }
 
-        $paymentStatus = strtolower((string) ($response['order_status']['key'] ?? ($response['status'] ?? '')));
+        // BUG-BOG-2: unwrap `body` if the receipt API returns the nested shape.
+        $paymentStatus = $this->extractOrderStatusKey($response);
         $isValid = in_array($paymentStatus, [self::STATUS_COMPLETED, self::STATUS_CAPTURED], true);
 
         $this->logger->info('BOG status API validation result', [

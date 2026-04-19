@@ -1,0 +1,17 @@
+<?xml version = "1.0"?>
+<config xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+        xsi:noNamespaceSchemaLocation="urn:magento:framework:Acl/etc/acl.xsd">
+    <acl>
+        <resources>
+            <resource id="Magento_Backend::admin">
+                <resource id="Magento_Sales::sales">
+                    <resource id="Shubo_BogPayment::bog_payment" title="BOG Payment Actions" sortOrder="60">
+                        <resource id="Shubo_BogPayment::capture" title="Capture Payment" sortOrder="10"/>
+                        <resource id="Shubo_BogPayment::void" title="Void Payment" sortOrder="20"/>
+                        <resource id="Shubo_BogPayment::check_status" title="Check Payment Status" sortOrder="30"/>
+                    </resource>
+                </resource>
+            </resource>
+        </resources>
+    </acl>
+</config>

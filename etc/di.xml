@@ -1,4 +1,4 @@
-<?xml version="1.0"?>
+<?xml version = "1.0"?>
 <config xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
         xsi:noNamespaceSchemaLocation="urn:magento:framework:ObjectManager/etc/config.xsd">
 
@@ -167,6 +167,13 @@
         </arguments>
     </type>
 
+    <!-- BUG-BOG-6: shared advisory-lock service for capture-path serialization -->
+    <type name="Shubo\BogPayment\Service\PaymentLock">
+        <arguments>
+            <argument name="logger" xsi:type="object">ShuboBogPaymentLogger</argument>
+        </arguments>
+    </type>
+
     <!-- Frontend Payment Controllers -->
     <type name="Shubo\BogPayment\Controller\Payment\Initiate">
         <arguments>
@@ -181,6 +188,12 @@
     </type>
 
     <type name="Shubo\BogPayment\Controller\Payment\Confirm">
+        <arguments>
+            <argument name="logger" xsi:type="object">ShuboBogPaymentLogger</argument>
+        </arguments>
+    </type>
+
+    <type name="Shubo\BogPayment\Controller\Payment\AbortRedirect">
         <arguments>
             <argument name="logger" xsi:type="object">ShuboBogPaymentLogger</argument>
         </arguments>

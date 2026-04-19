@@ -8,11 +8,13 @@ use Magento\Checkout\Model\Session as CheckoutSession;
 use Magento\Framework\App\Action\HttpPostActionInterface;
 use Magento\Framework\Controller\Result\JsonFactory;
 use Magento\Framework\Controller\ResultInterface;
+use Magento\Framework\Event\ManagerInterface as EventManager;
 use Magento\Framework\Exception\LocalizedException;
 use Magento\Framework\Locale\ResolverInterface;
 use Magento\Framework\UrlInterface;
 use Magento\Quote\Api\CartRepositoryInterface;
 use Psr\Log\LoggerInterface;
+use Shubo\BogPayment\Api\Data\SplitPaymentDataInterface;
 use Shubo\BogPayment\Gateway\Config\Config;
 use Shubo\BogPayment\Gateway\Http\Client\CreatePaymentClient;
 use Shubo\BogPayment\Gateway\Http\TransferFactory;
@@ -36,6 +38,8 @@ class Initiate implements HttpPostActionInterface
         private readonly UrlInterface $urlBuilder,
         private readonly ResolverInterface $localeResolver,
         private readonly LoggerInterface $logger,
+        private readonly EventManager $eventManager,
+        private readonly SplitPaymentDataInterface $splitPaymentData,
     ) {
     }
 
@@ -82,6 +86,14 @@ class Initiate implements HttpPostActionInterface
 
             // Build the BOG API request payload
             $requestBody = $this->buildRequestPayload($quote, $reservedOrderId, $grandTotal);
+
+            // BUG-BOG-1: merge quote-time commission split (dispatched via
+            // shubo_bog_payment_split_before_quote) into the BOG create-order
+            // payload. Failure is non-fatal — payment proceeds without split.
+            $splitSection = $this->buildSplitSection($quote);
+            if ($splitSection !== []) {
+                $requestBody = array_replace_recursive($requestBody, $splitSection);
+            }
 
             // Create the transfer and send to BOG
             $transfer = $this->transferFactory->create($requestBody);
@@ -198,6 +210,62 @@ class Initiate implements HttpPostActionInterface
                 'basket' => $basket,
             ],
             '__locale' => $locale,
+        ];
+    }
+
+    /**
+     * BUG-BOG-1: dispatch the quote-time commission split event and, if any
+     * observer populated SplitPaymentData, return the `config.split`
+     * fragment in the exact shape expected by BOG's create-order API (same
+     * as Gateway/Request/SplitDataBuilder).
+     *
+     * Fail-safe: any exception from the event dispatch is logged and
+     * swallowed; the payment proceeds without split data.
+     *
+     * @return array<string, mixed> empty array when split is disabled, the
+     *         observer produces no data, or dispatch throws
+     */
+    private function buildSplitSection(\Magento\Quote\Model\Quote $quote): array
+    {
+        if (!$this->config->isSplitEnabled()) {
+            return [];
+        }
+
+        $this->splitPaymentData->reset();
+
+        try {
+            $this->eventManager->dispatch('shubo_bog_payment_split_before_quote', [
+                'quote' => $quote,
+                'payment' => $quote->getPayment(),
+                'split_payment_data' => $this->splitPaymentData,
+            ]);
+        } catch (\Throwable $e) {
+            $this->logger->error('BOG split dispatch failed — payment proceeds without split', [
+                'quote_id' => $quote->getId(),
+                'exception' => $e->getMessage(),
+            ]);
+            return [];
+        }
+
+        if (!$this->splitPaymentData->hasSplitPayments()) {
+            return [];
+        }
+
+        $splitPayments = [];
+        foreach ($this->splitPaymentData->getSplitPayments() as $split) {
+            $splitPayments[] = [
+                'iban' => $split['iban'],
+                'percent' => $split['percent'],
+                'description' => $split['description'],
+            ];
+        }
+
+        return [
+            'config' => [
+                'split' => [
+                    'split_payments' => $splitPayments,
+                ],
+            ],
         ];
     }
 

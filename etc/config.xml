@@ -1,4 +1,4 @@
-<?xml version="1.0"?>
+<?xml version = "1.0"?>
 <config xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
         xsi:noNamespaceSchemaLocation="urn:magento:module:Magento_Store:etc/config.xsd">
     <default>
@@ -31,7 +31,7 @@
                 <split_receivers></split_receivers>
                 <debug>0</debug>
                 <sort_order>50</sort_order>
-                <paymentInfoKeys>bog_order_id,bog_status,bog_details_url,bog_card_type,bog_pan,bog_payment_method</paymentInfoKeys>
+                <paymentInfoKeys>bog_order_id,bog_status,bog_details_url,bog_card_type,bog_pan,bog_payment_method,bog_terminal_id,bog_payment_hash</paymentInfoKeys>
             </shubo_bog>
         </payment>
     </default>

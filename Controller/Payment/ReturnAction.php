@@ -18,6 +18,7 @@ use Magento\Sales\Model\Order\Payment;
 use Psr\Log\LoggerInterface;
 use Shubo\BogPayment\Gateway\Config\Config;
 use Shubo\BogPayment\Gateway\Http\Client\StatusClient;
+use Shubo\BogPayment\Service\PaymentLock;
 
 /**
  * Handles the customer return from BOG payment page.
@@ -41,6 +42,7 @@ class ReturnAction implements HttpGetActionInterface
         private readonly MessageManager $messageManager,
         private readonly Config $config,
         private readonly LoggerInterface $logger,
+        private readonly PaymentLock $paymentLock,
     ) {
     }
 
@@ -135,6 +137,38 @@ class ReturnAction implements HttpGetActionInterface
         array $statusResponse,
         \Magento\Framework\Controller\Result\Redirect $redirect,
     ): ResultInterface {
+        // BUG-BOG-6: serialize with Callback + Cron. Null on contention means
+        // another handler is already placing the order; fall through and
+        // redirect to success — the session's last_real_order_id was set by
+        // whichever handler actually placed the order.
+        $result = $this->paymentLock->withLock(
+            $bogOrderId,
+            fn(): Order => $this->placeAndProcessOrder($quote, $bogOrderId, $statusResponse)
+        );
+
+        if ($result === null) {
+            $this->logger->info('BOG Return: lock contended, assuming another handler finalized', [
+                'quote_id' => $quote->getId(),
+                'bog_order_id' => $bogOrderId,
+            ]);
+        }
+
+        return $redirect->setPath('checkout/onepage/success');
+    }
+
+    /**
+     * Place the Magento order and run the capture flow. Runs inside a
+     * PaymentLock in handleSuccess — no need to double-lock. Re-reads the
+     * quote's payment method to detect an order already placed by a
+     * concurrent Callback.
+     *
+     * @param array<string, mixed> $statusResponse
+     */
+    private function placeAndProcessOrder(
+        \Magento\Quote\Model\Quote $quote,
+        string $bogOrderId,
+        array $statusResponse,
+    ): Order {
         $quote->getPayment()->setMethod(Config::METHOD_CODE);
         $quote->getPayment()->setAdditionalInformation('bog_order_id', $bogOrderId);
         $quote->getPayment()->setAdditionalInformation('bog_status', 'completed');
@@ -145,7 +179,16 @@ class ReturnAction implements HttpGetActionInterface
         /** @var Order $order */
         $order = $this->orderRepository->get($orderId);
 
-        $this->processSuccessfulPayment($order, $bogOrderId, $statusResponse);
+        // Re-check state inside the lock — Callback may have beat us and
+        // already moved this order to processing with a registered capture.
+        if ($order->getState() === Order::STATE_PROCESSING) {
+            $this->logger->info('BOG Return: order already processing, skipping re-capture', [
+                'order_id' => $order->getIncrementId(),
+                'bog_order_id' => $bogOrderId,
+            ]);
+        } else {
+            $this->processSuccessfulPayment($order, $bogOrderId, $statusResponse);
+        }
 
         $this->checkoutSession->setLastSuccessQuoteId($quote->getId());
         $this->checkoutSession->setLastQuoteId($quote->getId());
@@ -157,11 +200,28 @@ class ReturnAction implements HttpGetActionInterface
             'bog_order_id' => $bogOrderId,
         ]);
 
-        return $redirect->setPath('checkout/onepage/success');
+        return $order;
     }
 
     /**
-     * Handle pending BOG payment: create order in pending_payment state.
+     * Handle pending BOG payment.
+     *
+     * CRITICAL (BUG-BOG-11): do NOT place a Magento order while the BOG
+     * status is still `in_progress` / `created`. If we did and BOG later
+     * terminated the payment as failed, a real order would sit forever in
+     * pending_payment without a matching capture — a ghost order.
+     *
+     * Instead:
+     *   - Keep bog_order_id on the quote so the customer can return later
+     *     (or the Callback/Confirm handlers can finalize when BOG posts the
+     *     terminal status).
+     *   - Show a friendly "payment is still processing — we'll email you"
+     *     message on the checkout page. No success page is shown, since no
+     *     order exists yet.
+     *   - The Callback + Confirm controllers already look up a Magento order
+     *     by reserved_order_id (increment_id) — when BOG terminally confirms
+     *     success, they materialize the Magento order from the preserved
+     *     quote via CartManagementInterface::placeOrder.
      *
      * @param \Magento\Quote\Model\Quote $quote Active quote
      * @param string $bogOrderId BOG order ID
@@ -177,33 +237,21 @@ class ReturnAction implements HttpGetActionInterface
         $quote->getPayment()->setAdditionalInformation('bog_status', 'in_progress');
         $this->cartRepository->save($quote);
 
-        $orderId = $this->cartManagement->placeOrder($quote->getId());
-
-        /** @var Order $order */
-        $order = $this->orderRepository->get($orderId);
-
-        /** @var Payment $payment */
-        $payment = $order->getPayment();
-        $payment->setTransactionId($bogOrderId);
-        $payment->setIsTransactionPending(true);
-        $payment->setIsTransactionClosed(false);
-
-        $order->addCommentToStatusHistory(
-            (string) __('Payment in progress at BOG. Order ID: %1. Awaiting confirmation.', $bogOrderId)
-        );
-        $this->orderRepository->save($order);
-
-        $this->checkoutSession->setLastSuccessQuoteId($quote->getId());
-        $this->checkoutSession->setLastQuoteId($quote->getId());
-        $this->checkoutSession->setLastOrderId($orderId);
-        $this->checkoutSession->setLastRealOrderId($order->getIncrementId());
-
-        $this->logger->info('BOG Return: order placed in pending state', [
-            'order_id' => $order->getIncrementId(),
+        $this->logger->info('BOG Return: payment still in progress, no Magento order placed', [
+            'quote_id' => $quote->getId(),
             'bog_order_id' => $bogOrderId,
+            'reserved_order_id' => $quote->getReservedOrderId(),
         ]);
 
-        return $redirect->setPath('checkout/onepage/success');
+        $this->messageManager->addNoticeMessage(
+            (string) __(
+                'Your payment is still being processed by the bank. '
+                . 'We will email you as soon as it is confirmed. '
+                . 'If no email arrives within 30 minutes, please contact support.'
+            )
+        );
+
+        return $redirect->setPath('checkout');
     }
 
     /**

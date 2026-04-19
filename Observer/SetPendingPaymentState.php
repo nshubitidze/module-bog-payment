@@ -7,6 +7,7 @@ namespace Shubo\BogPayment\Observer;
 use Magento\Framework\Event\Observer;
 use Magento\Framework\Event\ObserverInterface;
 use Magento\Sales\Model\Order;
+use Psr\Log\LoggerInterface;
 use Shubo\BogPayment\Model\Ui\ConfigProvider;
 
 /**
@@ -16,9 +17,17 @@ use Shubo\BogPayment\Model\Ui\ConfigProvider;
  * payment is handled externally by BOG), we set the order to pending_payment.
  * The callback, cron reconciler, or return controller will later move it
  * to processing after the bank confirms the payment.
+ *
+ * Non-critical: if state mutation fails, order placement must still proceed.
+ * The payment flow will work without the pending_payment state.
  */
 class SetPendingPaymentState implements ObserverInterface
 {
+    public function __construct(
+        private readonly LoggerInterface $logger,
+    ) {
+    }
+
     public function execute(Observer $observer): void
     {
         /** @var Order|null $order */
@@ -34,7 +43,16 @@ class SetPendingPaymentState implements ObserverInterface
             return;
         }
 
-        $order->setState(Order::STATE_PENDING_PAYMENT);
-        $order->setStatus('pending_payment');
+        try {
+            $order->setState(Order::STATE_PENDING_PAYMENT);
+            $order->setStatus('pending_payment');
+        } catch (\Throwable $e) {
+            // Non-critical: order placement must succeed even if state mutation fails.
+            // The payment callback/reconciler will correct the state later.
+            $this->logger->error('BOG: Failed to set pending_payment state on order', [
+                'order_id' => $order->getIncrementId(),
+                'error' => $e->getMessage(),
+            ]);
+        }
     }
 }

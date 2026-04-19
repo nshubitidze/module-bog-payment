@@ -14,10 +14,13 @@ use Magento\Sales\Model\Order;
 use Magento\Sales\Model\Order\Email\Sender\OrderSender;
 use Magento\Sales\Model\Order\Payment;
 use Psr\Log\LoggerInterface;
+use Magento\Quote\Api\CartManagementInterface;
+use Magento\Quote\Api\CartRepositoryInterface;
 use Shubo\BogPayment\Gateway\Config\Config;
 use Shubo\BogPayment\Gateway\Exception\BogApiException;
 use Shubo\BogPayment\Gateway\Http\Client\StatusClient;
 use Shubo\BogPayment\Model\Ui\ConfigProvider;
+use Shubo\BogPayment\Service\PaymentLock;
 
 /**
  * Cron job that reconciles stuck pending BOG payment orders.
@@ -32,6 +35,8 @@ class PendingOrderReconciler
 {
     private const MAX_ORDERS_PER_RUN = 50;
     private const PENDING_THRESHOLD_MINUTES = 15;
+    private const MAX_QUOTES_PER_RUN = 50;
+    public const DEFAULT_QUOTE_TTL_HOURS = 24;
 
     public function __construct(
         private readonly OrderRepositoryInterface $orderRepository,
@@ -43,6 +48,10 @@ class PendingOrderReconciler
         private readonly LoggerInterface $logger,
         private readonly ResourceConnection $resourceConnection,
         private readonly AppState $appState,
+        private readonly PaymentLock $paymentLock,
+        private readonly CartManagementInterface $cartManagement,
+        private readonly CartRepositoryInterface $cartRepository,
+        private readonly int $quoteTtlHours = self::DEFAULT_QUOTE_TTL_HOURS,
     ) {
     }
 
@@ -56,22 +65,40 @@ class PendingOrderReconciler
 
         $orders = $this->findPendingOrders();
 
-        if ($orders === []) {
-            return;
+        if ($orders !== []) {
+            $this->logger->info('BOG reconciler: processing pending orders', [
+                'count' => count($orders),
+            ]);
+
+            foreach ($orders as $order) {
+                try {
+                    $this->reconcileOrder($order);
+                } catch (\Exception $e) {
+                    $this->logger->error('BOG reconciler: failed to reconcile order', [
+                        'order_id' => $order->getIncrementId(),
+                        'error' => $e->getMessage(),
+                    ]);
+                }
+            }
         }
 
-        $this->logger->info('BOG reconciler: processing pending orders', [
-            'count' => count($orders),
-        ]);
-
-        foreach ($orders as $order) {
-            try {
-                $this->reconcileOrder($order);
-            } catch (\Exception $e) {
-                $this->logger->error('BOG reconciler: failed to reconcile order', [
-                    'order_id' => $order->getIncrementId(),
-                    'error' => $e->getMessage(),
-                ]);
+        // BUG-BOG-11b: also scan for quote-only state (BOG redirect terminated
+        // successfully in the background without the customer returning).
+        $quotePayloads = $this->findPendingQuotes();
+        if ($quotePayloads !== []) {
+            $this->logger->info('BOG reconciler: processing pending quotes', [
+                'count' => count($quotePayloads),
+            ]);
+            foreach ($quotePayloads as $payload) {
+                try {
+                    $this->reconcileQuote($payload);
+                } catch (\Exception $e) {
+                    $this->logger->error('BOG reconciler: failed to reconcile quote', [
+                        'quote_id' => $payload['quote_id'],
+                        'bog_order_id' => $payload['bog_order_id'],
+                        'error' => $e->getMessage(),
+                    ]);
+                }
             }
         }
     }
@@ -152,27 +179,46 @@ class PendingOrderReconciler
             'bog_status' => $orderStatusKey,
         ]);
 
-        $connection = $this->resourceConnection->getConnection();
-        $connection->beginTransaction();
-        try {
-            match ($orderStatusKey) {
-                'completed', 'captured' => $this->handleApproved($order, $payment, $response),
-                'error', 'rejected', 'declined' => $this->handleFailed($order, $orderStatusKey),
-                'expired' => $this->handleExpired($order),
-                'created', 'in_progress' => $this->logger->info(
-                    'BOG reconciler: order still in progress, will retry',
-                    ['order_id' => $order->getIncrementId(), 'bog_status' => $orderStatusKey]
-                ),
-                default => $this->logger->warning(
-                    'BOG reconciler: unknown status',
-                    ['order_id' => $order->getIncrementId(), 'bog_status' => $orderStatusKey]
-                ),
-            };
-            $connection->commit();
-        } catch (\Exception $e) {
-            $connection->rollBack();
-            throw $e;
-        }
+        // BUG-BOG-6: serialize with Callback + ReturnAction. withLock returns
+        // null if another worker beat us; we just skip — the next tick will
+        // see the order in `processing` and short-circuit.
+        $this->paymentLock->withLock($bogOrderId, function () use (
+            $order,
+            $payment,
+            $response,
+            $orderStatusKey
+        ): void {
+            // Reload state after acquiring the lock to avoid double-capture.
+            if ($order->getState() === Order::STATE_PROCESSING) {
+                $this->logger->info(
+                    'BOG reconciler: order already processing inside lock, skipping',
+                    ['order_id' => $order->getIncrementId()]
+                );
+                return;
+            }
+
+            $connection = $this->resourceConnection->getConnection();
+            $connection->beginTransaction();
+            try {
+                match ($orderStatusKey) {
+                    'completed', 'captured' => $this->handleApproved($order, $payment, $response),
+                    'error', 'rejected', 'declined' => $this->handleFailed($order, $orderStatusKey),
+                    'expired' => $this->handleExpired($order),
+                    'created', 'in_progress' => $this->logger->info(
+                        'BOG reconciler: order still in progress, will retry',
+                        ['order_id' => $order->getIncrementId(), 'bog_status' => $orderStatusKey]
+                    ),
+                    default => $this->logger->warning(
+                        'BOG reconciler: unknown status',
+                        ['order_id' => $order->getIncrementId(), 'bog_status' => $orderStatusKey]
+                    ),
+                };
+                $connection->commit();
+            } catch (\Exception $e) {
+                $connection->rollBack();
+                throw $e;
+            }
+        });
     }
 
     /**
@@ -282,6 +328,218 @@ class PendingOrderReconciler
         $this->logger->info('BOG reconciler: order expired and cancelled', [
             'order_id' => $order->getIncrementId(),
         ]);
+    }
+
+    /**
+     * BUG-BOG-11b: find pending quotes for our payment method that carry a
+     * bog_order_id — these are customers who returned from BOG while the
+     * bank still said `in_progress` (no Magento order placed yet).
+     *
+     * @return array<int, array{quote_id: int, bog_order_id: string, age_hours: float}>
+     */
+    private function findPendingQuotes(): array
+    {
+        try {
+            $connection = $this->resourceConnection->getConnection();
+            $quoteTable = $this->resourceConnection->getTableName('quote');
+            $paymentTable = $this->resourceConnection->getTableName('quote_payment');
+
+            $select = $connection->select()
+                ->from(
+                    ['q' => $quoteTable],
+                    ['quote_id' => 'entity_id', 'updated_at' => 'updated_at']
+                )
+                ->join(
+                    ['qp' => $paymentTable],
+                    'qp.quote_id = q.entity_id',
+                    ['additional_information']
+                )
+                ->where('q.is_active = ?', 1)
+                ->where('qp.method = ?', ConfigProvider::CODE)
+                ->where('qp.additional_information LIKE ?', '%"bog_order_id":"%')
+                ->limit(self::MAX_QUOTES_PER_RUN);
+
+            $rows = $connection->fetchAll($select);
+        } catch (\Throwable $e) {
+            $this->logger->error('BOG reconciler: quote scan failed', [
+                'exception' => $e->getMessage(),
+            ]);
+            return [];
+        }
+
+        $now = new \DateTimeImmutable();
+        $payloads = [];
+
+        foreach ($rows as $row) {
+            $additional = is_string($row['additional_information'])
+                ? json_decode($row['additional_information'], true)
+                : null;
+            if (!is_array($additional) || empty($additional['bog_order_id'])) {
+                continue;
+            }
+
+            $updatedAt = isset($row['updated_at']) && is_string($row['updated_at'])
+                ? new \DateTimeImmutable($row['updated_at'])
+                : $now;
+            $ageSeconds = $now->getTimestamp() - $updatedAt->getTimestamp();
+            $ageHours = $ageSeconds / 3600;
+
+            $payloads[] = [
+                'quote_id' => (int) $row['quote_id'],
+                'bog_order_id' => (string) $additional['bog_order_id'],
+                'age_hours' => (float) $ageHours,
+            ];
+        }
+
+        return $payloads;
+    }
+
+    /**
+     * Reconcile a single quote: check BOG status; on terminal success call
+     * CartManagementInterface::placeOrder + run the approved flow. On
+     * terminal failure or TTL expiry, deactivate the quote so the customer
+     * starts fresh next time.
+     *
+     * @param array{quote_id: int, bog_order_id: string, age_hours: float} $payload
+     */
+    private function reconcileQuote(array $payload): void
+    {
+        $quoteId = $payload['quote_id'];
+        $bogOrderId = $payload['bog_order_id'];
+
+        // TTL cleanup first — don't burn BOG API quota on stale quotes.
+        if ($payload['age_hours'] >= (float) $this->quoteTtlHours) {
+            $this->deactivateQuote($quoteId, 'ttl_exceeded');
+            return;
+        }
+
+        try {
+            $response = $this->statusClient->checkStatus($bogOrderId, 0);
+        } catch (BogApiException $e) {
+            $this->logger->error('BOG reconciler: quote status API error', [
+                'quote_id' => $quoteId,
+                'bog_order_id' => $bogOrderId,
+                'error' => $e->getMessage(),
+            ]);
+            return;
+        }
+
+        $orderStatusKey = strtolower(
+            (string) ($response['order_status']['key'] ?? ($response['status'] ?? ''))
+        );
+
+        $this->paymentLock->withLock($bogOrderId, function () use (
+            $quoteId,
+            $bogOrderId,
+            $orderStatusKey,
+            $response
+        ): void {
+            match ($orderStatusKey) {
+                'completed', 'captured' => $this->materializeQuote($quoteId, $bogOrderId, $response),
+                'expired' => $this->deactivateQuote($quoteId, 'bog_expired'),
+                'error', 'rejected', 'declined' => $this->deactivateQuote($quoteId, 'bog_' . $orderStatusKey),
+                'created', 'in_progress' => $this->logger->info(
+                    'BOG reconciler: quote still in progress, will retry',
+                    ['quote_id' => $quoteId, 'bog_order_id' => $bogOrderId]
+                ),
+                default => $this->logger->warning(
+                    'BOG reconciler: unknown quote status',
+                    ['quote_id' => $quoteId, 'bog_status' => $orderStatusKey]
+                ),
+            };
+        });
+    }
+
+    /**
+     * Materialize a quote → Magento order and run the approved capture flow.
+     *
+     * @param array<string, mixed> $response
+     */
+    private function materializeQuote(int $quoteId, string $bogOrderId, array $response): void
+    {
+        try {
+            $quote = $this->cartRepository->get($quoteId);
+            if ($quote instanceof \Magento\Quote\Model\Quote) {
+                $quotePayment = $quote->getPayment();
+                if ($quotePayment !== null) {
+                    $quotePayment->setMethod(ConfigProvider::CODE);
+                    $quotePayment->setAdditionalInformation('bog_order_id', $bogOrderId);
+                    $quotePayment->setAdditionalInformation('bog_status', 'completed');
+                }
+            }
+            $this->cartRepository->save($quote);
+
+            $orderId = $this->cartManagement->placeOrder((int) $quote->getId());
+            $order = $this->orderRepository->get((int) $orderId);
+            if (!$order instanceof Order) {
+                $this->logger->error('BOG reconciler: materialized entity is not a concrete Order', [
+                    'quote_id' => $quoteId,
+                    'bog_order_id' => $bogOrderId,
+                ]);
+                return;
+            }
+            /** @var Payment $payment */
+            $payment = $order->getPayment();
+            if ($payment === null) {
+                $this->logger->error('BOG reconciler: materialized order has no payment', [
+                    'order_id' => $order->getIncrementId(),
+                ]);
+                return;
+            }
+
+            // Store the bog_order_id before handleApproved reads it.
+            $payment->setAdditionalInformation('bog_order_id', $bogOrderId);
+
+            $connection = $this->resourceConnection->getConnection();
+            $connection->beginTransaction();
+            try {
+                $this->handleApproved($order, $payment, $response);
+                $connection->commit();
+            } catch (\Exception $e) {
+                $connection->rollBack();
+                throw $e;
+            }
+
+            $this->logger->info('BOG reconciler: materialized order from pending quote', [
+                'quote_id' => $quoteId,
+                'order_id' => $order->getIncrementId(),
+                'bog_order_id' => $bogOrderId,
+            ]);
+        } catch (\Throwable $e) {
+            $this->logger->error('BOG reconciler: failed to materialize order from quote', [
+                'quote_id' => $quoteId,
+                'bog_order_id' => $bogOrderId,
+                'exception' => $e->getMessage(),
+            ]);
+        }
+    }
+
+    /**
+     * Deactivate a stale/failed pending quote. Uses direct DB to avoid
+     * touching full quote totals/items in a cron context.
+     */
+    private function deactivateQuote(int $quoteId, string $reason): void
+    {
+        try {
+            $connection = $this->resourceConnection->getConnection();
+            $quoteTable = $this->resourceConnection->getTableName('quote');
+            $connection->update(
+                $quoteTable,
+                ['is_active' => 0],
+                ['entity_id = ?' => $quoteId]
+            );
+
+            $this->logger->info('BOG reconciler: deactivated stale quote', [
+                'quote_id' => $quoteId,
+                'reason' => $reason,
+            ]);
+        } catch (\Throwable $e) {
+            $this->logger->error('BOG reconciler: failed to deactivate quote', [
+                'quote_id' => $quoteId,
+                'reason' => $reason,
+                'exception' => $e->getMessage(),
+            ]);
+        }
     }
 
     /**

@@ -30,9 +30,12 @@ class RefundRequestBuilder implements BuilderInterface
         $payment = $paymentDO->getPayment();
         $bogOrderId = $payment->getAdditionalInformation('bog_order_id') ?? '';
 
+        // BUG-BOG-17: use bcmath truncation to 2-decimal scale rather than
+        // number_format's half-even rounding so the refund wire amount stays
+        // consistent with the bcmath chain used across Commission + Payout.
         return [
             'order_id' => $bogOrderId,
-            'amount' => number_format($amount, 2, '.', ''),
+            'amount' => bcadd((string) $amount, '0', 2),
         ];
     }
 }
