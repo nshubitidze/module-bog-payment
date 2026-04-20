@@ -7,6 +7,7 @@ namespace Shubo\BogPayment\Controller\Adminhtml\Order;
 use Magento\Backend\App\Action;
 use Magento\Backend\App\Action\Context;
 use Magento\Framework\Controller\ResultInterface;
+use Magento\Framework\Exception\LocalizedException;
 use Magento\Sales\Api\OrderRepositoryInterface;
 use Magento\Sales\Model\Order;
 use Magento\Sales\Model\Order\Email\Sender\OrderSender;
@@ -14,6 +15,7 @@ use Magento\Sales\Model\Order\Payment;
 use Psr\Log\LoggerInterface;
 use Shubo\BogPayment\Gateway\Config\Config;
 use Shubo\BogPayment\Gateway\Http\Client\StatusClient;
+use Shubo\BogPayment\Model\Ui\ConfigProvider;
 
 /**
  * Admin controller to check and sync the BOG payment status for an order.
@@ -44,8 +46,11 @@ class CheckStatus extends Action
         try {
             /** @var Order $order */
             $order = $this->orderRepository->get($orderId);
-            /** @var Payment $payment */
+            /** @var Payment|null $payment */
             $payment = $order->getPayment();
+            if ($payment === null || $payment->getMethod() !== ConfigProvider::CODE) {
+                throw new LocalizedException(__('Invalid payment method for this action.'));
+            }
             $bogOrderId = (string) $payment->getAdditionalInformation('bog_order_id');
 
             if ($bogOrderId === '') {

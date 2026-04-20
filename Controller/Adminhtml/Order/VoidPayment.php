@@ -7,10 +7,12 @@ namespace Shubo\BogPayment\Controller\Adminhtml\Order;
 use Magento\Backend\App\Action;
 use Magento\Backend\App\Action\Context;
 use Magento\Framework\Controller\ResultInterface;
+use Magento\Framework\Exception\LocalizedException;
 use Magento\Sales\Api\OrderRepositoryInterface;
 use Magento\Sales\Model\Order;
 use Magento\Sales\Model\Order\Payment;
 use Psr\Log\LoggerInterface;
+use Shubo\BogPayment\Model\Ui\ConfigProvider;
 
 /**
  * Admin controller to void a pending or pre-authorized BOG payment.
@@ -39,8 +41,11 @@ class VoidPayment extends Action
             /** @var Order $order */
             $order = $this->orderRepository->get($orderId);
 
-            /** @var Payment $payment */
+            /** @var Payment|null $payment */
             $payment = $order->getPayment();
+            if ($payment === null || $payment->getMethod() !== ConfigProvider::CODE) {
+                throw new LocalizedException(__('Invalid payment method for this action.'));
+            }
             $payment->setAdditionalInformation('preauth_approved', false);
 
             $order->cancel();
