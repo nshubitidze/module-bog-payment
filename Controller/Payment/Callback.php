@@ -21,6 +21,7 @@ use Magento\Sales\Model\ResourceModel\Order\CollectionFactory as OrderCollection
 use Psr\Log\LoggerInterface;
 use Shubo\BogPayment\Gateway\Config\Config;
 use Shubo\BogPayment\Gateway\Validator\CallbackValidator;
+use Shubo\BogPayment\Service\MoneyCaster;
 use Shubo\BogPayment\Service\PaymentLock;
 
 /**
@@ -68,7 +69,6 @@ class Callback implements HttpPostActionInterface, CsrfAwareActionInterface
     public function execute(): ResultInterface
     {
         $result = $this->rawFactory->create();
-        $result->setHttpResponseCode(200);
 
         try {
             $rawBody = (string) $this->request->getContent();
@@ -77,8 +77,10 @@ class Callback implements HttpPostActionInterface, CsrfAwareActionInterface
             $callbackData = json_decode($rawBody, true);
 
             if (!is_array($callbackData)) {
+                // BUG-BOG-10: malformed JSON cannot be retried — 400.
                 $this->logger->warning('BOG callback: invalid JSON body');
                 $result->setContents('INVALID_BODY');
+                $result->setHttpResponseCode(400);
                 return $result;
             }
 
@@ -102,17 +104,21 @@ class Callback implements HttpPostActionInterface, CsrfAwareActionInterface
             ]);
 
             if ($bogOrderId === '' && $externalOrderId === '') {
+                // BUG-BOG-10: a payload with no identifiers can never be
+                // resolved — 400 tells BOG to stop retrying.
                 $this->logger->warning('BOG callback: missing both order_id and external_order_id');
                 $result->setContents('MISSING_ORDER_ID');
+                $result->setHttpResponseCode(400);
                 return $result;
             }
 
             $lockKey = $bogOrderId !== '' ? $bogOrderId : $externalOrderId;
 
             // Lock for the duration of order lookup + capture. The withLock
-            // returns null on contention, which we surface as ORDER_PENDING so
-            // BOG keeps the callback retry budget. Serializes against
-            // ReturnAction::handleSuccess and Cron/PendingOrderReconciler.
+            // returns null on contention, which we surface as LOCK_CONTENDED
+            // with HTTP 200 — the work is idempotent and cron/another retry
+            // will finalise. Serializes against ReturnAction::handleSuccess
+            // and Cron/PendingOrderReconciler (BUG-BOG-6).
             $contents = $this->paymentLock->withLock(
                 $lockKey,
                 fn(): string => $this->handleLocked(
@@ -124,28 +130,50 @@ class Callback implements HttpPostActionInterface, CsrfAwareActionInterface
             );
 
             if ($contents === null) {
-                // Another handler is currently processing this bog_order_id.
-                // Return 200 to avoid callback storms; caller will retry or
-                // cron will finalize.
                 $this->logger->info('BOG callback: lock contended, deferring', [
                     'bog_order_id' => $bogOrderId,
                     'external_order_id' => $externalOrderId,
                 ]);
                 $result->setContents('LOCK_CONTENDED');
+                $result->setHttpResponseCode(200);
                 return $result;
             }
 
+            // BUG-BOG-10: map response code per business meaning.
+            //   VALIDATION_FAILED      -> 400  (bogus/tampered signature or
+            //                                   cross-wired order — no point
+            //                                   retrying)
+            //   ORDER_PENDING          -> 200  (idempotent, cron finalises)
+            //   ALREADY_PROCESSED / OK -> 200  (happy path / duplicate)
+            //   ERROR                  -> 500  (internal failure mid-process;
+            //                                   BOG exponential backoff is safe)
             $result->setContents($contents);
+            $result->setHttpResponseCode($this->httpStatusFor($contents));
         } catch (\Exception $e) {
             $this->logger->critical('BOG callback processing error', [
                 'exception' => $e->getMessage(),
                 'trace' => $e->getTraceAsString(),
             ]);
-            // Return 200 even on error to prevent BOG from excessive retrying.
+            // BUG-BOG-10: unexpected exceptions are transient — 500 lets
+            // BOG's exponential backoff recover. The capture path is
+            // idempotent (BUG-BOG-6 PaymentLock + state re-check).
             $result->setContents('ERROR');
+            $result->setHttpResponseCode(500);
         }
 
         return $result;
+    }
+
+    /**
+     * BUG-BOG-10: map controller response-body sentinels to HTTP status codes.
+     */
+    private function httpStatusFor(string $contents): int
+    {
+        return match ($contents) {
+            'VALIDATION_FAILED' => 400,
+            'ERROR' => 500,
+            default => 200,
+        };
     }
 
     public function createCsrfValidationException(RequestInterface $request): ?InvalidRequestException
@@ -436,8 +464,14 @@ class Callback implements HttpPostActionInterface, CsrfAwareActionInterface
         } else {
             $payment->setIsTransactionPending(false);
             $payment->setIsTransactionClosed(true);
-            // Magento API requires float; bcmath values live in additional_information.
-            $payment->registerCaptureNotification((float) $order->getGrandTotal());
+            // BUG-BOG-8: MoneyCaster encapsulates the required float cast at
+            // the Magento Payment API boundary. grand_total arrives as a
+            // bcmath-safe numeric string (DECIMAL column); the cast is safe
+            // because MoneyCaster refuses empty / non-numeric / negative
+            // inputs and clamps to 2 decimal places.
+            $payment->registerCaptureNotification(
+                MoneyCaster::toMagentoFloat($order->getGrandTotal())
+            );
             $order->setState(Order::STATE_PROCESSING);
             $order->setStatus(Order::STATE_PROCESSING);
             $order->addCommentToStatusHistory(

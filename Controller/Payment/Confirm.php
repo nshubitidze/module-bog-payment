@@ -16,6 +16,7 @@ use Psr\Log\LoggerInterface;
 use Shubo\BogPayment\Gateway\Config\Config;
 use Shubo\BogPayment\Gateway\Http\Client\StatusClient;
 use Shubo\BogPayment\Gateway\Validator\CallbackValidator;
+use Shubo\BogPayment\Service\MoneyCaster;
 use Shubo\BogPayment\Service\PaymentLock;
 
 /**
@@ -166,7 +167,10 @@ class Confirm implements HttpPostActionInterface
         } else {
             $payment->setIsTransactionPending(false);
             $payment->setIsTransactionClosed(true);
-            $payment->registerCaptureNotification((float) $order->getGrandTotal());
+            // BUG-BOG-8: see MoneyCaster note in Callback.php.
+            $payment->registerCaptureNotification(
+                MoneyCaster::toMagentoFloat($order->getGrandTotal())
+            );
             $order->setState(Order::STATE_PROCESSING);
             $order->setStatus(Order::STATE_PROCESSING);
             $order->addCommentToStatusHistory(

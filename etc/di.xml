@@ -15,6 +15,8 @@
     <type name="Shubo\BogPayment\Gateway\Config\Config">
         <arguments>
             <argument name="methodCode" xsi:type="const">Shubo\BogPayment\Gateway\Config\Config::METHOD_CODE</argument>
+            <!-- BUG-BOG-15: environment-aware API URL resolver -->
+            <argument name="apiUrlResolver" xsi:type="object">Shubo\BogPayment\Gateway\Config\ApiUrlResolver</argument>
         </arguments>
     </type>
 
@@ -161,9 +163,15 @@
         </arguments>
     </type>
 
+    <!-- BUG-BOG-9: per-storeId OAuth token cache.
+         Uses Magento\Framework\App\Cache\Type\Config (the `config` cache
+         type, frontend `cache.static` under the hood) — persistent across
+         PHP-FPM workers, cleared via `bin/magento cache:clean config`
+         whenever BOG credentials are rotated. -->
     <type name="Shubo\BogPayment\Model\OAuthTokenProvider">
         <arguments>
             <argument name="logger" xsi:type="object">ShuboBogPaymentLogger</argument>
+            <argument name="cache" xsi:type="object">Magento\Framework\App\Cache\Type\Config</argument>
         </arguments>
     </type>
 
@@ -200,9 +208,13 @@
     </type>
 
     <!-- Cron -->
+    <!-- BUG-BOG-12: creditmemoFactory/creditmemoManagement wired for
+         BOG-driven refund reconciliation. -->
     <type name="Shubo\BogPayment\Cron\PendingOrderReconciler">
         <arguments>
             <argument name="logger" xsi:type="object">ShuboBogPaymentLogger</argument>
+            <argument name="creditmemoFactory" xsi:type="object">Magento\Sales\Model\Order\CreditmemoFactory</argument>
+            <argument name="creditmemoManagement" xsi:type="object">Magento\Sales\Api\CreditmemoManagementInterface</argument>
         </arguments>
     </type>
 

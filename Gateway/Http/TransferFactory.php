@@ -27,7 +27,8 @@ class TransferFactory implements TransferFactoryInterface
         return $this->transferBuilder
             ->setBody($request)
             ->setMethod('POST')
-            ->setUri($this->config->getApiUrl())
+            // BUG-BOG-15: environment-aware base URL.
+            ->setUri($this->config->getEffectiveApiUrl())
             ->build();
     }
 }

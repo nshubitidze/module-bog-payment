@@ -9,8 +9,10 @@ use Magento\Framework\Api\SortOrderBuilder;
 use Magento\Framework\App\Area;
 use Magento\Framework\App\ResourceConnection;
 use Magento\Framework\App\State as AppState;
+use Magento\Sales\Api\CreditmemoManagementInterface;
 use Magento\Sales\Api\OrderRepositoryInterface;
 use Magento\Sales\Model\Order;
+use Magento\Sales\Model\Order\CreditmemoFactory;
 use Magento\Sales\Model\Order\Email\Sender\OrderSender;
 use Magento\Sales\Model\Order\Payment;
 use Psr\Log\LoggerInterface;
@@ -20,6 +22,7 @@ use Shubo\BogPayment\Gateway\Config\Config;
 use Shubo\BogPayment\Gateway\Exception\BogApiException;
 use Shubo\BogPayment\Gateway\Http\Client\StatusClient;
 use Shubo\BogPayment\Model\Ui\ConfigProvider;
+use Shubo\BogPayment\Service\MoneyCaster;
 use Shubo\BogPayment\Service\PaymentLock;
 
 /**
@@ -51,6 +54,8 @@ class PendingOrderReconciler
         private readonly PaymentLock $paymentLock,
         private readonly CartManagementInterface $cartManagement,
         private readonly CartRepositoryInterface $cartRepository,
+        private readonly CreditmemoFactory $creditmemoFactory,
+        private readonly CreditmemoManagementInterface $creditmemoManagement,
         private readonly int $quoteTtlHours = self::DEFAULT_QUOTE_TTL_HOURS,
     ) {
     }
@@ -104,7 +109,15 @@ class PendingOrderReconciler
     }
 
     /**
-     * Find pending BOG payment orders older than the threshold.
+     * Find BOG orders that still need reconciliation.
+     *
+     * Two classes of orders are returned:
+     *   1. Pending/payment_review — customer hasn't come back yet, we poll
+     *      BOG for the terminal payment status.
+     *   2. Processing/complete — already captured locally but BOG might have
+     *      reported an out-of-band refund, reversal or chargeback since
+     *      (BUG-BOG-12). We still need a bog_order_id to be worth polling,
+     *      filtered by the `reconcileOrder()` state machine.
      *
      * @return Order[]
      */
@@ -120,24 +133,43 @@ class PendingOrderReconciler
             ->create();
 
         $searchCriteria = $this->searchCriteriaBuilder
-            ->addFilter('state', [Order::STATE_PENDING_PAYMENT, Order::STATE_PAYMENT_REVIEW], 'in')
+            ->addFilter(
+                'state',
+                [
+                    Order::STATE_PENDING_PAYMENT,
+                    Order::STATE_PAYMENT_REVIEW,
+                    Order::STATE_PROCESSING,
+                    Order::STATE_COMPLETE,
+                ],
+                'in'
+            )
             ->addFilter('created_at', $threshold->format('Y-m-d H:i:s'), 'lt')
             ->setPageSize(self::MAX_ORDERS_PER_RUN)
             ->setSortOrders([$sortOrder])
             ->create();
 
         $orderList = $this->orderRepository->getList($searchCriteria);
-        $pendingOrders = [];
+        $candidates = [];
 
         /** @var Order $order */
         foreach ($orderList->getItems() as $order) {
+            /** @var Payment|null $payment */
             $payment = $order->getPayment();
-            if ($payment !== null && $payment->getMethod() === ConfigProvider::CODE) {
-                $pendingOrders[] = $order;
+            if ($payment === null || $payment->getMethod() !== ConfigProvider::CODE) {
+                continue;
             }
+            // BUG-BOG-12: captured orders need a bog_order_id to be reconcilable
+            // against a BOG-driven refund / reversal / chargeback.
+            if (
+                in_array($order->getState(), [Order::STATE_PROCESSING, Order::STATE_COMPLETE], true)
+                && (string) $payment->getAdditionalInformation('bog_order_id') === ''
+            ) {
+                continue;
+            }
+            $candidates[] = $order;
         }
 
-        return $pendingOrders;
+        return $candidates;
     }
 
     /**
@@ -188,8 +220,12 @@ class PendingOrderReconciler
             $response,
             $orderStatusKey
         ): void {
-            // Reload state after acquiring the lock to avoid double-capture.
-            if ($order->getState() === Order::STATE_PROCESSING) {
+            // Reload state after acquiring the lock. For capture-path statuses
+            // (completed/captured) already-processing orders are done — skip.
+            // Post-capture statuses (refunded/reversed/chargeback) must still
+            // run against processing/complete orders (BUG-BOG-12).
+            $isCaptureStatus = in_array($orderStatusKey, ['completed', 'captured'], true);
+            if ($isCaptureStatus && $order->getState() === Order::STATE_PROCESSING) {
                 $this->logger->info(
                     'BOG reconciler: order already processing inside lock, skipping',
                     ['order_id' => $order->getIncrementId()]
@@ -202,7 +238,15 @@ class PendingOrderReconciler
             try {
                 match ($orderStatusKey) {
                     'completed', 'captured' => $this->handleApproved($order, $payment, $response),
-                    'error', 'rejected', 'declined' => $this->handleFailed($order, $orderStatusKey),
+                    // BUG-BOG-12: post-capture BOG-driven events.
+                    'refunded' => $this->handleRefunded($order, $response),
+                    'reversed' => $this->handleReversed($order, $response),
+                    'chargeback' => $this->handleChargeback($order, $response),
+                    'error', 'rejected', 'declined' => $this->handleRejectedOrCancelled(
+                        $order,
+                        $orderStatusKey,
+                        $response
+                    ),
                     'expired' => $this->handleExpired($order),
                     'created', 'in_progress' => $this->logger->info(
                         'BOG reconciler: order still in progress, will retry',
@@ -263,7 +307,10 @@ class PendingOrderReconciler
 
         $payment->setIsTransactionPending(false);
         $payment->setIsTransactionClosed(true);
-        $payment->registerCaptureNotification((float) $order->getGrandTotal());
+        // BUG-BOG-8: see MoneyCaster note in Callback.php.
+        $payment->registerCaptureNotification(
+            MoneyCaster::toMagentoFloat($order->getGrandTotal())
+        );
 
         $order->setState(Order::STATE_PROCESSING);
         $order->setStatus(Order::STATE_PROCESSING);
@@ -293,24 +340,259 @@ class PendingOrderReconciler
     }
 
     /**
-     * Handle failed payment -- cancel order.
+     * BUG-BOG-12: `error` / `rejected` / `declined` are terminal-failure
+     * statuses. State-machine matrix (mirrors TBC BUG-6 handleReversed):
+     *
+     *   closed / canceled           -> no-op (idempotent)
+     *   pending_payment / new /
+     *     payment_review / holded   -> $order->cancel() (no invoice yet)
+     *   processing / complete with
+     *     FULL reversal             -> STATE_CLOSED + comment
+     *   processing / complete with
+     *     PARTIAL reversal          -> comment only, state unchanged
+     *   unknown state               -> WARN, no-op
+     *
+     * @param array<string, mixed> $response
      */
-    private function handleFailed(Order $order, string $status): void
+    private function handleRejectedOrCancelled(Order $order, string $status, array $response): void
     {
-        $order->cancel();
-        $order->addCommentToStatusHistory(
-            (string) __(
-                'Payment failed at BOG (reconciled by cron). Status: %1',
-                $status
-            )
-        );
+        $state = (string) $order->getState();
 
-        $this->orderRepository->save($order);
+        // Idempotent terminal states: safe to re-deliver without side effects.
+        if ($state === Order::STATE_CLOSED || $state === Order::STATE_CANCELED) {
+            return;
+        }
 
-        $this->logger->info('BOG reconciler: order cancelled due to failed payment', [
+        // Pre-capture states: no invoice yet, Magento's cancel() handles items.
+        if (
+            in_array($state, [
+                Order::STATE_PENDING_PAYMENT,
+                Order::STATE_PAYMENT_REVIEW,
+                Order::STATE_NEW,
+                Order::STATE_HOLDED,
+            ], true)
+        ) {
+            $order->cancel();
+            $order->addCommentToStatusHistory(
+                (string) __(
+                    'Payment %1 at BOG (reconciled by cron). Order cancelled.',
+                    $status
+                )
+            );
+            $this->orderRepository->save($order);
+            $this->logger->info('BOG reconciler: order cancelled due to failed payment', [
+                'order_id' => $order->getIncrementId(),
+                'status' => $status,
+            ]);
+            return;
+        }
+
+        // Post-capture: treat `rejected` on a processing order as a reversal
+        // and route through handleReversed for consistent integer-tetri math.
+        if ($state === Order::STATE_PROCESSING || $state === Order::STATE_COMPLETE) {
+            $this->handleReversed($order, $response);
+            return;
+        }
+
+        $this->logger->warning('BOG reconciler: unexpected rejection state', [
             'order_id' => $order->getIncrementId(),
+            'state' => $state,
             'status' => $status,
         ]);
+    }
+
+    /**
+     * BUG-BOG-12: BOG reports `refunded`. Create an offline creditmemo for
+     * the refund amount (full or partial) and let Magento's
+     * CreditmemoManagementInterface handle state transitions + inventory.
+     *
+     * Idempotent: skip if the order already has any creditmemo (BOG's
+     * refund_id isn't reliably mirrored into Magento's creditmemo
+     * transaction_id, so we keep it simple — at-most-one creditmemo per
+     * order from this path).
+     *
+     * @param array<string, mixed> $response BOG receipt payload
+     */
+    private function handleRefunded(Order $order, array $response): void
+    {
+        if ($order->hasCreditmemos()) {
+            $this->logger->info('BOG reconciler: order already has creditmemo, skipping refund', [
+                'order_id' => $order->getIncrementId(),
+            ]);
+            return;
+        }
+
+        // Integer-tetri math — never compare floats on money (CLAUDE.md #6).
+        $grandTotalMinor = (int) round(((float) $order->getGrandTotal()) * 100);
+        $refundAmountMinor = $this->extractMinorAmount($response, ['refund_amount', 'amount'], $grandTotalMinor);
+        $isFull = $refundAmountMinor >= $grandTotalMinor;
+
+        try {
+            $creditmemo = $this->creditmemoFactory->createByOrder($order);
+            $creditmemo->setAutomaticallyCreated(true);
+            $creditmemo->addComment(
+                (string) __(
+                    'Creditmemo auto-generated from BOG refund (reconciled by cron).%1',
+                    $isFull ? '' : ' Partial refund.'
+                )
+            );
+            $this->creditmemoManagement->refund($creditmemo, true);
+
+            $order->addCommentToStatusHistory(
+                (string) __(
+                    'Payment refunded at BOG (reconciled by cron). Amount: %1 %2',
+                    number_format($refundAmountMinor / 100, 2, '.', ''),
+                    (string) $order->getOrderCurrencyCode()
+                )
+            );
+            $this->orderRepository->save($order);
+
+            $this->logger->info('BOG reconciler: created offline creditmemo for refund', [
+                'order_id' => $order->getIncrementId(),
+                'refund_minor' => $refundAmountMinor,
+            ]);
+        } catch (\Exception $e) {
+            $this->logger->error('BOG reconciler: failed to create creditmemo for refund', [
+                'order_id' => $order->getIncrementId(),
+                'exception' => $e->getMessage(),
+            ]);
+        }
+    }
+
+    /**
+     * BUG-BOG-12: BOG reports `reversed`. State-machine mirrors
+     * TBC Callback::handleReversed.
+     *
+     * @param array<string, mixed> $response
+     */
+    private function handleReversed(Order $order, array $response): void
+    {
+        $state = (string) $order->getState();
+
+        if ($state === Order::STATE_CLOSED || $state === Order::STATE_CANCELED) {
+            return;
+        }
+
+        $grandTotalMinor = (int) round(((float) $order->getGrandTotal()) * 100);
+        $reverseAmountMinor = $this->extractMinorAmount(
+            $response,
+            ['reverse_amount', 'amount'],
+            $grandTotalMinor
+        );
+        $isFull = $reverseAmountMinor >= $grandTotalMinor;
+
+        if (
+            in_array($state, [
+                Order::STATE_PENDING_PAYMENT,
+                Order::STATE_PAYMENT_REVIEW,
+                Order::STATE_NEW,
+                Order::STATE_HOLDED,
+            ], true)
+        ) {
+            $order->cancel();
+            $order->addCommentToStatusHistory(
+                (string) __('Payment reversed at BOG before capture (reconciled by cron). Order cancelled.')
+            );
+            $this->orderRepository->save($order);
+            return;
+        }
+
+        if ($state === Order::STATE_PROCESSING || $state === Order::STATE_COMPLETE) {
+            if ($isFull) {
+                $order->setState(Order::STATE_CLOSED)->setStatus(Order::STATE_CLOSED);
+                $order->addCommentToStatusHistory(
+                    (string) __('Payment fully reversed at BOG (reconciled by cron). Order closed.')
+                );
+                $this->orderRepository->save($order);
+                return;
+            }
+
+            $order->addCommentToStatusHistory(
+                (string) __(
+                    'Partial reversal at BOG (reconciled by cron). Amount: %1 %2. State unchanged.',
+                    number_format($reverseAmountMinor / 100, 2, '.', ''),
+                    (string) $order->getOrderCurrencyCode()
+                )
+            );
+            $this->orderRepository->save($order);
+            return;
+        }
+
+        $this->logger->warning('BOG reconciler: unexpected reversal state', [
+            'order_id' => $order->getIncrementId(),
+            'state' => $state,
+        ]);
+    }
+
+    /**
+     * BUG-BOG-12: BOG reports `chargeback`. Treat as a full reversal and
+     * stamp a chargeback-tagged comment so the admin sees the reason.
+     *
+     * @param array<string, mixed> $response
+     */
+    private function handleChargeback(Order $order, array $response): void
+    {
+        $state = (string) $order->getState();
+
+        if ($state === Order::STATE_CLOSED || $state === Order::STATE_CANCELED) {
+            return;
+        }
+
+        // Chargebacks only apply to captured orders; on any pre-capture
+        // state we still cancel and log as chargeback for the trail.
+        if (
+            in_array($state, [
+                Order::STATE_PENDING_PAYMENT,
+                Order::STATE_PAYMENT_REVIEW,
+                Order::STATE_NEW,
+                Order::STATE_HOLDED,
+            ], true)
+        ) {
+            $order->cancel();
+            $order->addCommentToStatusHistory(
+                (string) __('BOG chargeback (reconciled by cron) on uncaptured order. Order cancelled.')
+            );
+            $this->orderRepository->save($order);
+            return;
+        }
+
+        // Post-capture chargeback == full reversal + explicit tag.
+        $order->setState(Order::STATE_CLOSED)->setStatus(Order::STATE_CLOSED);
+        $order->addCommentToStatusHistory(
+            (string) __('BOG chargeback (reconciled by cron). Order closed.')
+        );
+        $this->orderRepository->save($order);
+
+        $this->logger->warning('BOG reconciler: order closed due to chargeback', [
+            'order_id' => $order->getIncrementId(),
+        ]);
+    }
+
+    /**
+     * Extract a monetary amount in minor units from a BOG response.
+     * Walks a list of candidate keys; falls back to $defaultMinor when none
+     * are present or positive. String/float input is rounded to integer
+     * tetri to defeat float `==` / `>=` precision bugs (CLAUDE.md #6).
+     *
+     * @param array<string, mixed> $response
+     * @param list<string> $candidateKeys
+     */
+    private function extractMinorAmount(array $response, array $candidateKeys, int $defaultMinor): int
+    {
+        foreach ($candidateKeys as $key) {
+            if (!isset($response[$key])) {
+                continue;
+            }
+            $raw = $response[$key];
+            if (!is_numeric($raw)) {
+                continue;
+            }
+            $minor = (int) round(((float) $raw) * 100);
+            if ($minor > 0) {
+                return $minor;
+            }
+        }
+        return $defaultMinor;
     }
 
     /**

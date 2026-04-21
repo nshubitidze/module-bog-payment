@@ -6,17 +6,24 @@ namespace Shubo\BogPayment\Controller\Payment;
 
 use Magento\Checkout\Model\Session as CheckoutSession;
 use Magento\Framework\App\Action\HttpPostActionInterface;
+use Magento\Framework\App\CsrfAwareActionInterface;
+use Magento\Framework\App\Request\InvalidRequestException;
+use Magento\Framework\App\RequestInterface;
 use Magento\Framework\Controller\Result\JsonFactory;
 use Magento\Framework\Controller\ResultInterface;
+use Magento\Framework\Data\Form\FormKey\Validator as FormKeyValidator;
 use Magento\Framework\Event\ManagerInterface as EventManager;
 use Magento\Framework\Exception\LocalizedException;
 use Magento\Framework\Locale\ResolverInterface;
+use Magento\Framework\Phrase;
 use Magento\Framework\UrlInterface;
 use Magento\Quote\Api\CartRepositoryInterface;
 use Psr\Log\LoggerInterface;
 use Shubo\BogPayment\Api\Data\SplitPaymentDataInterface;
 use Shubo\BogPayment\Gateway\Config\Config;
+use Shubo\BogPayment\Gateway\Exception\BogApiException;
 use Shubo\BogPayment\Gateway\Http\Client\CreatePaymentClient;
+use Shubo\BogPayment\Gateway\Http\Client\StatusClient;
 use Shubo\BogPayment\Gateway\Http\TransferFactory;
 
 /**
@@ -26,7 +33,7 @@ use Shubo\BogPayment\Gateway\Http\TransferFactory;
  * is sent to BOG as the external_order_id. The actual Magento order is
  * created only after the customer returns from BOG with a successful payment.
  */
-class Initiate implements HttpPostActionInterface
+class Initiate implements HttpPostActionInterface, CsrfAwareActionInterface
 {
     public function __construct(
         private readonly CheckoutSession $checkoutSession,
@@ -40,7 +47,40 @@ class Initiate implements HttpPostActionInterface
         private readonly LoggerInterface $logger,
         private readonly EventManager $eventManager,
         private readonly SplitPaymentDataInterface $splitPaymentData,
+        private readonly StatusClient $statusClient,
+        private readonly FormKeyValidator $formKeyValidator,
     ) {
+    }
+
+    /**
+     * BUG-BOG-14: explicit CSRF guard. Reject POSTs without a valid
+     * form_key instead of relying on the implicit default
+     * FormKeyValidator plugin — makes the security posture first-class
+     * and audit-visible.
+     */
+    public function createCsrfValidationException(RequestInterface $request): ?InvalidRequestException
+    {
+        if ($this->formKeyValidator->validate($request)) {
+            return null;
+        }
+
+        return new InvalidRequestException(
+            $this->jsonFactory->create()->setData([
+                'success' => false,
+                'message' => (string) __('Invalid form key. Please refresh the page and try again.'),
+            ]),
+            [new Phrase('Invalid form key.')]
+        );
+    }
+
+    /**
+     * Return null to defer to Magento's default validation flow which
+     * invokes createCsrfValidationException above. Returning true here
+     * would bypass the form_key check entirely.
+     */
+    public function validateForCsrf(RequestInterface $request): ?bool
+    {
+        return null;
     }
 
     public function execute(): ResultInterface
@@ -70,6 +110,20 @@ class Initiate implements HttpPostActionInterface
                     'success' => false,
                     'message' => (string) __('Invalid cart total.'),
                 ]);
+            }
+
+            // BUG-BOG-13b: probe an existing bog_order_id before a fresh
+            // initiation. Three outcomes:
+            //   terminal success  -> redirect to success page (don't
+            //                        double-charge; watchdog/reconciler may
+            //                        not have cleaned up yet)
+            //   pending           -> surface "still processing" message
+            //   terminal failure  -> clear stale id, proceed with fresh order
+            //   status API error  -> proceed defensively; cron will reap any
+            //                        orphan
+            $probe = $this->probeExistingBogOrder($quote);
+            if ($probe !== null) {
+                return $result->setData($probe);
             }
 
             // Reserve an order ID on the quote if not already reserved
@@ -278,5 +332,101 @@ class Initiate implements HttpPostActionInterface
             'ka' => 'ka',
             default => 'en',
         };
+    }
+
+    /**
+     * BUG-BOG-13b: if the quote carries an existing bog_order_id, probe
+     * BOG for its status and return a ready-made JSON response payload
+     * for the three non-proceed outcomes:
+     *
+     *   terminal success -> {success: true, redirect_url: onepage/success}
+     *   pending          -> {success: false, message: still processing}
+     *
+     * Terminal failure (expired/rejected/declined/error) clears the stale
+     * id from the quote and returns null so the caller proceeds with a
+     * fresh create-order. Status API errors also return null — the
+     * defensive choice is "treat existing id as gone" (cron will reap).
+     *
+     * @return array<string, mixed>|null null if caller should proceed
+     */
+    private function probeExistingBogOrder(\Magento\Quote\Model\Quote $quote): ?array
+    {
+        $quotePayment = $quote->getPayment();
+        $existing = (string) ($quotePayment->getAdditionalInformation('bog_order_id') ?? '');
+        if ($existing === '') {
+            return null;
+        }
+
+        $storeId = (int) $quote->getStoreId();
+
+        try {
+            $response = $this->statusClient->checkStatus($existing, $storeId);
+        } catch (BogApiException $e) {
+            $this->logger->warning('BOG Initiate: status probe failed on existing bog_order_id', [
+                'bog_order_id' => $existing,
+                'exception' => $e->getMessage(),
+            ]);
+            $this->clearStaleBogData($quote);
+            return null;
+        }
+
+        $status = strtolower(
+            (string) ($response['order_status']['key'] ?? ($response['status'] ?? ''))
+        );
+
+        if (in_array($status, ['completed', 'captured'], true)) {
+            $successUrl = $this->urlBuilder->getUrl(
+                'checkout/onepage/success',
+                ['_secure' => true]
+            );
+            $this->logger->info('BOG Initiate: existing order already paid, short-circuit', [
+                'bog_order_id' => $existing,
+            ]);
+            return [
+                'success' => true,
+                'redirect_url' => $successUrl,
+                'bog_order_id' => $existing,
+                'already_paid' => true,
+            ];
+        }
+
+        if (in_array($status, ['created', 'in_progress'], true)) {
+            $this->logger->info('BOG Initiate: existing order still in progress, blocking fresh init', [
+                'bog_order_id' => $existing,
+                'status' => $status,
+            ]);
+            return [
+                'success' => false,
+                'bog_order_id' => $existing,
+                'message' => (string) __(
+                    'Your previous payment is still being processed by the bank. '
+                    . 'Please wait a few minutes before retrying.'
+                ),
+            ];
+        }
+
+        // Terminal failure: expired / rejected / declined / error / unknown.
+        $this->logger->info('BOG Initiate: existing bog_order_id is stale, clearing', [
+            'bog_order_id' => $existing,
+            'status' => $status,
+        ]);
+        $this->clearStaleBogData($quote);
+        return null;
+    }
+
+    private function clearStaleBogData(\Magento\Quote\Model\Quote $quote): void
+    {
+        $payment = $quote->getPayment();
+        foreach (['bog_order_id', 'bog_redirect_url', 'bog_details_url', 'bog_status'] as $key) {
+            $payment->unsAdditionalInformation($key);
+        }
+        try {
+            $this->cartRepository->save($quote);
+        } catch (\Exception $e) {
+            $this->logger->warning('BOG Initiate: failed to save quote after clearing stale bog data', [
+                'quote_id' => $quote->getId(),
+                'exception' => $e->getMessage(),
+            ]);
+        }
     }
 }

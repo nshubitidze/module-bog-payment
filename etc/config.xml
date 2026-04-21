@@ -19,7 +19,10 @@
                 <can_use_internal>0</can_use_internal>
                 <order_status>pending_payment</order_status>
 
-                <api_url>https://api.bog.ge/payments/v1</api_url>
+                <!-- BUG-BOG-15: api_url default removed; ApiUrlResolver
+                     derives it from `environment` (test/production) so
+                     flipping the environment flag also flips the endpoint.
+                     Admin override via system.xml still wins. -->
                 <oauth_url>https://oauth2.bog.ge/auth/realms/bog/protocol/openid-connect/token</oauth_url>
                 <environment>test</environment>
                 <payment_action_mode>automatic</payment_action_mode>

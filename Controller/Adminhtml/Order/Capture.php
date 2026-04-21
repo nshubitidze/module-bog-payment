@@ -14,6 +14,7 @@ use Magento\Sales\Model\Order\Payment;
 use Psr\Log\LoggerInterface;
 use Shubo\BogPayment\Gateway\Http\Client\CaptureClient;
 use Shubo\BogPayment\Model\Ui\ConfigProvider;
+use Shubo\BogPayment\Service\MoneyCaster;
 
 /**
  * Admin controller to manually capture a pre-authorized BOG payment.
@@ -53,7 +54,11 @@ class Capture extends Action
                 throw new \RuntimeException('No BOG order ID found on this order.');
             }
 
-            $amount = (float) $order->getGrandTotal();
+            // BUG-BOG-8: MoneyCaster encapsulates the Payment API float boundary.
+            // Used both for the wire amount to BOG and for the subsequent
+            // registerCaptureNotification call — a single clamped value
+            // guarantees the two always agree.
+            $amount = MoneyCaster::toMagentoFloat($order->getGrandTotal());
             $currency = (string) $order->getOrderCurrencyCode();
 
             $response = $this->captureClient->capture(

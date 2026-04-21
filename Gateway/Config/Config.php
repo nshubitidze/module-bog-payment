@@ -32,13 +32,41 @@ class Config extends GatewayConfig
     private const PAYMENT_LIFETIME_MAX = 1440;
     private const PAYMENT_LIFETIME_DEFAULT = 15;
 
+    /**
+     * BUG-BOG-15: the resolver is optional at the constructor boundary to
+     * avoid the circular dep that would arise from ApiUrlResolver depending
+     * on Config + Config depending on ApiUrlResolver. DI wires it via
+     * `@inject` property since constructor injection would fail the
+     * virtualType parents. Any caller that wants the effective, environment-
+     * aware base URL should go via `getEffectiveApiUrl()` below — the
+     * `getCreateOrderUrl / getOrderStatusUrl / getCaptureUrl / getRefundUrl`
+     * helpers already use it.
+     */
     public function __construct(
         ScopeConfigInterface $scopeConfig,
         private readonly EncryptorInterface $encryptor,
+        ?ApiUrlResolver $apiUrlResolver = null,
         ?string $methodCode = self::METHOD_CODE,
         string $pathPattern = GatewayConfig::DEFAULT_PATH_PATTERN,
     ) {
+        $this->apiUrlResolver = $apiUrlResolver;
         parent::__construct($scopeConfig, $methodCode, $pathPattern);
+    }
+
+    private ?ApiUrlResolver $apiUrlResolver;
+
+    /**
+     * Return the effective API base URL, applying environment-based
+     * defaults when the admin hasn't set api_url explicitly.
+     */
+    public function getEffectiveApiUrl(?int $storeId = null): string
+    {
+        if ($this->apiUrlResolver !== null) {
+            return rtrim($this->apiUrlResolver->resolve($storeId), '/');
+        }
+        // Fallback for legacy instantiation paths that don't inject the
+        // resolver — behave as before (raw admin value).
+        return $this->getApiUrl($storeId);
     }
 
     public function isActive(?int $storeId = null): bool
@@ -62,6 +90,13 @@ class Config extends GatewayConfig
         return $this->encryptor->decrypt($value);
     }
 
+    /**
+     * Raw admin-configured api_url (empty string when not set). The
+     * environment-aware resolution lives in `ApiUrlResolver::resolve()` so
+     * callers that want the effective URL should use the resolver directly
+     * (or the downstream helpers on this class, which have been updated to
+     * delegate through the resolver).
+     */
     public function getApiUrl(?int $storeId = null): string
     {
         return rtrim((string) $this->getValue(self::KEY_API_URL, $storeId), '/');
@@ -80,8 +115,8 @@ class Config extends GatewayConfig
             return rtrim($oauthUrl, '/');
         }
 
-        // Fallback: derive from API URL for backward compatibility
-        return $this->getApiUrl($storeId) . '/oauth2/token';
+        // Fallback: derive from effective API URL for backward compatibility
+        return $this->getEffectiveApiUrl($storeId) . '/oauth2/token';
     }
 
     public function getEnvironment(?int $storeId = null): string
@@ -163,12 +198,12 @@ class Config extends GatewayConfig
 
     public function getCreateOrderUrl(?int $storeId = null): string
     {
-        return $this->getApiUrl($storeId) . '/ecommerce/orders';
+        return $this->getEffectiveApiUrl($storeId) . '/ecommerce/orders';
     }
 
     public function getRefundUrl(?int $storeId = null): string
     {
-        return $this->getApiUrl($storeId) . '/checkout/refund';
+        return $this->getEffectiveApiUrl($storeId) . '/checkout/refund';
     }
 
     /**
@@ -178,7 +213,7 @@ class Config extends GatewayConfig
      */
     public function getOrderStatusUrl(string $orderId, ?int $storeId = null): string
     {
-        return $this->getApiUrl($storeId) . '/receipt/' . $orderId;
+        return $this->getEffectiveApiUrl($storeId) . '/receipt/' . $orderId;
     }
 
     /**
@@ -188,6 +223,6 @@ class Config extends GatewayConfig
      */
     public function getCaptureUrl(string $orderId, ?int $storeId = null): string
     {
-        return $this->getApiUrl($storeId) . '/payment/authorization/approve/' . $orderId;
+        return $this->getEffectiveApiUrl($storeId) . '/payment/authorization/approve/' . $orderId;
     }
 }

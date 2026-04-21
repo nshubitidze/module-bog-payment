@@ -16,6 +16,7 @@ use Psr\Log\LoggerInterface;
 use Shubo\BogPayment\Gateway\Config\Config;
 use Shubo\BogPayment\Gateway\Http\Client\StatusClient;
 use Shubo\BogPayment\Model\Ui\ConfigProvider;
+use Shubo\BogPayment\Service\MoneyCaster;
 
 /**
  * Admin controller to check and sync the BOG payment status for an order.
@@ -141,7 +142,10 @@ class CheckStatus extends Action
         } else {
             $payment->setIsTransactionPending(false);
             $payment->setIsTransactionClosed(true);
-            $payment->registerCaptureNotification((float) $order->getGrandTotal());
+            // BUG-BOG-8: MoneyCaster encapsulates the Payment API float boundary.
+            $payment->registerCaptureNotification(
+                MoneyCaster::toMagentoFloat($order->getGrandTotal())
+            );
             $order->setState(Order::STATE_PROCESSING);
             $order->setStatus(Order::STATE_PROCESSING);
             $order->addCommentToStatusHistory(
