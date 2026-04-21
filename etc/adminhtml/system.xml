@@ -38,6 +38,18 @@
                     <backend_model>Magento\Config\Model\Config\Backend\Encrypted</backend_model>
                 </field>
 
+                <!-- BUG-BOG-3 cutover fix: the RSA public key used to verify
+                     SHA256withRSA Callback-Signature headers is injected via
+                     the go-live CLI (shubo:payment:switch-to-prod:bog) rather
+                     than hardcoded in PHP. Encrypted backend model so the
+                     PEM never lands in core_config_data in plaintext. -->
+                <field id="rsa_public_key" translate="label comment" type="textarea" sortOrder="52"
+                       showInDefault="1" showInWebsite="1" showInStore="0">
+                    <label>RSA Public Key (PEM)</label>
+                    <comment><![CDATA[PEM-encoded RSA public key from the BOG business portal, used to verify callback signatures. Populated on production cutover via <code>bin/magento shubo:payment:switch-to-prod:bog --rsa-key-path=...</code>.]]></comment>
+                    <backend_model>Magento\Config\Model\Config\Backend\Encrypted</backend_model>
+                </field>
+
                 <field id="payment_action_mode" translate="label comment" type="select" sortOrder="55"
                        showInDefault="1" showInWebsite="1" showInStore="0">
                     <label>Payment Action</label>

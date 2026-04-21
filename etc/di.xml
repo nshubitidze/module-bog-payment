@@ -154,6 +154,7 @@
     <type name="Shubo\BogPayment\Gateway\Validator\CallbackValidator">
         <arguments>
             <argument name="logger" xsi:type="object">ShuboBogPaymentLogger</argument>
+            <argument name="config" xsi:type="object">Shubo\BogPayment\Gateway\Config\Config</argument>
         </arguments>
     </type>
 
@@ -234,6 +235,40 @@
     <type name="Shubo\BogPayment\Controller\Adminhtml\Order\VoidPayment">
         <arguments>
             <argument name="logger" xsi:type="object">ShuboBogPaymentLogger</argument>
+        </arguments>
+    </type>
+
+    <!-- Prod cutover CLI (GO_LIVE_CHECKLIST §3.2). Shares the
+         payment-cutover.log virtualType definition with Shubo_TbcPayment
+         via distinct names so di.xml merging does not collide. -->
+    <virtualType name="ShuboBogPaymentCutoverLogHandler" type="Magento\Framework\Logger\Handler\Base">
+        <arguments>
+            <argument name="fileName" xsi:type="string">/var/log/payment-cutover.log</argument>
+        </arguments>
+    </virtualType>
+
+    <virtualType name="ShuboBogPaymentCutoverLogger" type="Magento\Framework\Logger\Monolog">
+        <arguments>
+            <argument name="name" xsi:type="string">shubo_payment_cutover</argument>
+            <argument name="handlers" xsi:type="array">
+                <item name="system" xsi:type="object">ShuboBogPaymentCutoverLogHandler</item>
+            </argument>
+        </arguments>
+    </virtualType>
+
+    <type name="Shubo\BogPayment\Console\Command\SwitchToProdCommand">
+        <arguments>
+            <argument name="cutoverLogger" xsi:type="object">ShuboBogPaymentCutoverLogger</argument>
+        </arguments>
+    </type>
+
+    <!-- Bind on the INTERFACE, never the concrete CommandList (BUG-SETUP-1). -->
+    <type name="Magento\Framework\Console\CommandListInterface">
+        <arguments>
+            <argument name="commands" xsi:type="array">
+                <item name="shubo_payment_switch_to_prod_bog"
+                      xsi:type="object">Shubo\BogPayment\Console\Command\SwitchToProdCommand</item>
+            </argument>
         </arguments>
     </type>
 </config>

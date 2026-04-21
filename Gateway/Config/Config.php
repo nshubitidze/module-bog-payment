@@ -16,6 +16,7 @@ class Config extends GatewayConfig
     private const KEY_TITLE = 'title';
     private const KEY_CLIENT_ID = 'client_id';
     private const KEY_CLIENT_SECRET = 'client_secret';
+    private const KEY_RSA_PUBLIC_KEY = 'rsa_public_key';
     private const KEY_API_URL = 'api_url';
     private const KEY_OAUTH_URL = 'oauth_url';
     private const KEY_ENVIRONMENT = 'environment';
@@ -87,6 +88,21 @@ class Config extends GatewayConfig
     public function getClientSecret(?int $storeId = null): string
     {
         $value = (string) $this->getValue(self::KEY_CLIENT_SECRET, $storeId);
+        return $this->encryptor->decrypt($value);
+    }
+
+    /**
+     * Get the decrypted BOG RSA public key (PEM) used to verify callback
+     * signatures. Returns '' when not configured so callers can cleanly
+     * fall through to the status-API fallback (BUG-BOG-3 fail-closed
+     * contract).
+     */
+    public function getRsaPublicKey(?int $storeId = null): string
+    {
+        $value = (string) $this->getValue(self::KEY_RSA_PUBLIC_KEY, $storeId);
+        if ($value === '') {
+            return '';
+        }
         return $this->encryptor->decrypt($value);
     }
 

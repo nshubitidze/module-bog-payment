@@ -6,6 +6,7 @@ namespace Shubo\BogPayment\Gateway\Validator;
 
 use Magento\Framework\Exception\LocalizedException;
 use Psr\Log\LoggerInterface;
+use Shubo\BogPayment\Gateway\Config\Config;
 use Shubo\BogPayment\Gateway\Exception\BogApiException;
 use Shubo\BogPayment\Gateway\Http\Client\StatusClient;
 
@@ -41,6 +42,7 @@ PEM;
     public function __construct(
         private readonly StatusClient $statusClient,
         private readonly LoggerInterface $logger,
+        private readonly ?Config $config = null,
     ) {
     }
 
@@ -134,7 +136,17 @@ PEM;
      */
     private function verifySignature(string $data, string $signature): bool
     {
-        $publicKey = openssl_pkey_get_public(self::BOG_PUBLIC_KEY);
+        // BUG-BOG-3 cutover fix: prefer the PEM injected via
+        // `shubo:payment:switch-to-prod:bog --rsa-key-path=...` and stored
+        // encrypted in system config. The const fallback exists only for
+        // sandbox/demo envs where the launch CLI hasn't been run; it is
+        // intentionally malformed and fail-closes via openssl_pkey_get_public().
+        $pem = $this->config !== null ? $this->config->getRsaPublicKey() : '';
+        if ($pem === '') {
+            $pem = self::BOG_PUBLIC_KEY;
+        }
+
+        $publicKey = openssl_pkey_get_public($pem);
         if ($publicKey === false) {
             $this->logger->error('BOG callback: failed to load public key for signature verification');
             return false;
