@@ -19,3 +19,7 @@ secrets/
 *.swo
 .DS_Store
 Thumbs.db
+
+# Negate global ignores — this module ships its tests (open-source).
+!Test/
+!Test/**
