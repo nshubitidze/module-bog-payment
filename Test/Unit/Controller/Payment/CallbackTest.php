@@ -587,6 +587,338 @@ class CallbackTest extends TestCase
         self::assertSame(500, $this->lastStatus);
     }
 
+    /**
+     * Session 8 Priority 2.1 — edge case #6 (order amount changes mid-flow).
+     *
+     * If the BOG-reported total under purchase_units.total_amount disagrees
+     * with the local Magento order's grand_total by more than 1 tetri, the
+     * cart was edited (or the request was tampered) between initiation and
+     * capture. Refuse with AMOUNT_MISMATCH (HTTP 400 — do not retry).
+     */
+    public function testAmountMismatchAbortsWithHttp400(): void
+    {
+        $rawBody = json_encode([
+            'event' => 'order_payment',
+            'body' => [
+                'order_id' => 'BOG-AMNT',
+                'external_order_id' => '000000301',
+                'order_status' => ['key' => 'completed'],
+                'purchase_units' => ['total_amount' => 50.00],
+            ],
+        ], JSON_THROW_ON_ERROR);
+        $this->request->method('getContent')->willReturn($rawBody);
+        $this->request->method('getHeader')->willReturn(false);
+
+        $orderPayment = $this->createMock(Payment::class);
+        // Capture path must NOT run.
+        $orderPayment->expects(self::never())->method('registerCaptureNotification');
+
+        $order = $this->createMock(Order::class);
+        $order->method('getId')->willReturn(301);
+        $order->method('getStoreId')->willReturn(1);
+        // Local order says 25.00 — BOG reports 50.00 → 2500 tetri diff.
+        $order->method('getGrandTotal')->willReturn(25.00);
+        $order->method('getState')->willReturn(Order::STATE_PENDING_PAYMENT);
+        $order->method('getStatus')->willReturn('pending_payment');
+        $order->method('getIncrementId')->willReturn('000000301');
+        $order->method('getPayment')->willReturn($orderPayment);
+
+        $collection = $this->createMock(OrderCollection::class);
+        $collection->method('addFieldToFilter')->willReturnSelf();
+        $collection->method('setPageSize')->willReturnSelf();
+        $collection->method('getFirstItem')->willReturn($order);
+        $this->orderCollectionFactory->method('create')->willReturn($collection);
+
+        // Pass-1 reviewer M-1 fix: validation['data'] carries the FULL
+        // callback envelope on the signature path. amountMismatch() unwraps
+        // 'body' before reading purchase_units; this mock shape matches
+        // production exactly.
+        $this->callbackValidator->method('validate')->willReturn([
+            'valid' => true,
+            'status' => 'completed',
+            'data' => [
+                'event' => 'order_payment',
+                'body' => [
+                    'order_id' => 'BOG-AMNT',
+                    'order_status' => ['key' => 'completed'],
+                    'purchase_units' => ['total_amount' => 50.00],
+                ],
+            ],
+        ]);
+
+        // The critical raw-context log line for ops correlation.
+        $this->logger->expects(self::atLeastOnce())
+            ->method('critical')
+            ->with(
+                self::stringContains('amount mismatch'),
+                self::callback(static function (array $ctx): bool {
+                    return ($ctx['order_id'] ?? null) === '000000301'
+                        && ($ctx['bog_order_id'] ?? null) === 'BOG-AMNT'
+                        && ($ctx['bog_amount_minor'] ?? null) === 5000
+                        && ($ctx['order_amount_minor'] ?? null) === 2500;
+                })
+            );
+
+        $this->orderRepository->expects(self::never())->method('save');
+
+        $this->buildController()->execute();
+
+        self::assertSame('AMOUNT_MISMATCH', $this->lastContents);
+        self::assertSame(400, $this->lastStatus);
+    }
+
+    /**
+     * Tolerance check: 1-tetri rounding drift between BOG and Magento must
+     * NOT trip the mismatch guard (false-positive defence).
+     */
+    public function testAmountWithin1TetriToleranceProcessesNormally(): void
+    {
+        $rawBody = json_encode([
+            'event' => 'order_payment',
+            'body' => [
+                'order_id' => 'BOG-EPSI',
+                'external_order_id' => '000000302',
+                'order_status' => ['key' => 'completed'],
+                'purchase_units' => ['total_amount' => 25.01],
+            ],
+        ], JSON_THROW_ON_ERROR);
+        $this->request->method('getContent')->willReturn($rawBody);
+        $this->request->method('getHeader')->willReturn(false);
+
+        $orderPayment = $this->createMock(Payment::class);
+        $orderPayment->method('setAdditionalInformation')->willReturnSelf();
+        $orderPayment->method('setTransactionId')->willReturnSelf();
+        $orderPayment->method('setIsTransactionPending')->willReturnSelf();
+        $orderPayment->method('setIsTransactionClosed')->willReturnSelf();
+        $orderPayment->method('registerCaptureNotification')->willReturnSelf();
+
+        $order = $this->createMock(Order::class);
+        $order->method('getId')->willReturn(302);
+        $order->method('getStoreId')->willReturn(1);
+        $order->method('getGrandTotal')->willReturn(25.00);
+        $order->method('getBaseGrandTotal')->willReturn(25.00);
+        $order->method('getState')->willReturn(Order::STATE_PENDING_PAYMENT);
+        $order->method('getStatus')->willReturn('pending_payment');
+        $order->method('getIncrementId')->willReturn('000000302');
+        $order->method('getPayment')->willReturn($orderPayment);
+        $order->method('addCommentToStatusHistory')->willReturnSelf();
+        $order->method('setState')->willReturnSelf();
+        $order->method('setStatus')->willReturnSelf();
+
+        $collection = $this->createMock(OrderCollection::class);
+        $collection->method('addFieldToFilter')->willReturnSelf();
+        $collection->method('setPageSize')->willReturnSelf();
+        $collection->method('getFirstItem')->willReturn($order);
+        $this->orderCollectionFactory->method('create')->willReturn($collection);
+
+        // Production shape: validation['data'] is the full envelope with
+        // body wrapper (Pass-1 reviewer M-1 fix).
+        $this->callbackValidator->method('validate')->willReturn([
+            'valid' => true,
+            'status' => 'completed',
+            'data' => [
+                'event' => 'order_payment',
+                'body' => [
+                    'order_id' => 'BOG-EPSI',
+                    'purchase_units' => ['total_amount' => 25.01],
+                ],
+            ],
+        ]);
+        $this->config->method('isPreauth')->willReturn(false);
+
+        // critical-log must NOT fire (no mismatch within tolerance).
+        $this->logger->expects(self::never())->method('critical');
+
+        $this->buildController()->execute();
+
+        self::assertSame('OK', $this->lastContents);
+    }
+
+    /**
+     * No amount in callback data → guard cannot evaluate, so it must NOT
+     * block (defensive: BOG callbacks vary by status type).
+     */
+    public function testMissingAmountProcessesNormally(): void
+    {
+        $rawBody = json_encode([
+            'event' => 'order_payment',
+            'body' => [
+                'order_id' => 'BOG-NOAM',
+                'external_order_id' => '000000303',
+                'order_status' => ['key' => 'completed'],
+                // no purchase_units / amount
+            ],
+        ], JSON_THROW_ON_ERROR);
+        $this->request->method('getContent')->willReturn($rawBody);
+        $this->request->method('getHeader')->willReturn(false);
+
+        $orderPayment = $this->createMock(Payment::class);
+        $orderPayment->method('setAdditionalInformation')->willReturnSelf();
+        $orderPayment->method('setTransactionId')->willReturnSelf();
+        $orderPayment->method('setIsTransactionPending')->willReturnSelf();
+        $orderPayment->method('setIsTransactionClosed')->willReturnSelf();
+        $orderPayment->method('registerCaptureNotification')->willReturnSelf();
+
+        $order = $this->createMock(Order::class);
+        $order->method('getId')->willReturn(303);
+        $order->method('getStoreId')->willReturn(1);
+        $order->method('getGrandTotal')->willReturn(99.99);
+        $order->method('getBaseGrandTotal')->willReturn(99.99);
+        $order->method('getState')->willReturn(Order::STATE_PENDING_PAYMENT);
+        $order->method('getStatus')->willReturn('pending_payment');
+        $order->method('getIncrementId')->willReturn('000000303');
+        $order->method('getPayment')->willReturn($orderPayment);
+        $order->method('addCommentToStatusHistory')->willReturnSelf();
+        $order->method('setState')->willReturnSelf();
+        $order->method('setStatus')->willReturnSelf();
+
+        $collection = $this->createMock(OrderCollection::class);
+        $collection->method('addFieldToFilter')->willReturnSelf();
+        $collection->method('setPageSize')->willReturnSelf();
+        $collection->method('getFirstItem')->willReturn($order);
+        $this->orderCollectionFactory->method('create')->willReturn($collection);
+
+        $this->callbackValidator->method('validate')->willReturn([
+            'valid' => true,
+            'status' => 'completed',
+            'data' => [],
+        ]);
+        $this->config->method('isPreauth')->willReturn(false);
+
+        $this->logger->expects(self::never())->method('critical');
+
+        $this->buildController()->execute();
+
+        self::assertSame('OK', $this->lastContents);
+    }
+
+    /**
+     * Pass-1 reviewer regression — exercise the EXACT BOG callback envelope
+     * shape end-to-end so we can't get lulled by a pre-flattened mock again.
+     *
+     * The payload is what `signAndPostBogCallback()` posts in the lifecycle
+     * specs: `{event, zoned_request_time, body: {order_status, purchase_units, ...}}`.
+     * The validator's signature path returns the full envelope as
+     * `validation['data']`; amountMismatch() must unwrap `body` before
+     * reading purchase_units.
+     */
+    public function testAmountMismatchTriggersOnRealCallbackEnvelopeShape(): void
+    {
+        $envelopeBody = [
+            'order_id' => 'BOG-ENVL',
+            'external_order_id' => '000000400',
+            'order_status' => ['key' => 'completed'],
+            'purchase_units' => ['currency' => 'GEL', 'total_amount' => 75.00],
+        ];
+        $envelope = [
+            'event' => 'order_payment',
+            'zoned_request_time' => '2026-04-25T12:00:00Z',
+            'body' => $envelopeBody,
+        ];
+        $rawBody = json_encode($envelope, JSON_THROW_ON_ERROR);
+
+        $this->request->method('getContent')->willReturn($rawBody);
+        $this->request->method('getHeader')->willReturn(false);
+
+        $orderPayment = $this->createMock(Payment::class);
+        $orderPayment->expects(self::never())->method('registerCaptureNotification');
+
+        $order = $this->createMock(Order::class);
+        $order->method('getId')->willReturn(400);
+        $order->method('getStoreId')->willReturn(1);
+        // Local order says 30.00 — BOG envelope reports 75.00 → 4500 tetri diff.
+        $order->method('getGrandTotal')->willReturn(30.00);
+        $order->method('getState')->willReturn(Order::STATE_PENDING_PAYMENT);
+        $order->method('getStatus')->willReturn('pending_payment');
+        $order->method('getIncrementId')->willReturn('000000400');
+        $order->method('getPayment')->willReturn($orderPayment);
+
+        $collection = $this->createMock(OrderCollection::class);
+        $collection->method('addFieldToFilter')->willReturnSelf();
+        $collection->method('setPageSize')->willReturnSelf();
+        $collection->method('getFirstItem')->willReturn($order);
+        $this->orderCollectionFactory->method('create')->willReturn($collection);
+
+        // Validator returns the full envelope verbatim — exactly the
+        // CallbackValidator signature path's behaviour.
+        $this->callbackValidator->method('validate')->willReturn([
+            'valid' => true,
+            'status' => 'completed',
+            'data' => $envelope,
+        ]);
+
+        $this->logger->expects(self::atLeastOnce())
+            ->method('critical')
+            ->with(
+                self::stringContains('amount mismatch'),
+                self::callback(static function (array $ctx): bool {
+                    return ($ctx['order_id'] ?? null) === '000000400'
+                        && ($ctx['bog_amount_minor'] ?? null) === 7500
+                        && ($ctx['order_amount_minor'] ?? null) === 3000;
+                })
+            );
+
+        $this->orderRepository->expects(self::never())->method('save');
+
+        $this->buildController()->execute();
+
+        self::assertSame('AMOUNT_MISMATCH', $this->lastContents);
+        self::assertSame(400, $this->lastStatus);
+    }
+
+    /**
+     * Status-API fallback path returns the receipt response directly (no
+     * `body` wrapper). The mismatch guard must still work on this shape.
+     */
+    public function testAmountMismatchHandlesFlatStatusApiShape(): void
+    {
+        $rawBody = json_encode([
+            'event' => 'order_payment',
+            'body' => [
+                'order_id' => 'BOG-FLAT',
+                'external_order_id' => '000000401',
+                'order_status' => ['key' => 'completed'],
+            ],
+        ], JSON_THROW_ON_ERROR);
+        $this->request->method('getContent')->willReturn($rawBody);
+        $this->request->method('getHeader')->willReturn(false);
+
+        $orderPayment = $this->createMock(Payment::class);
+        $orderPayment->expects(self::never())->method('registerCaptureNotification');
+
+        $order = $this->createMock(Order::class);
+        $order->method('getId')->willReturn(401);
+        $order->method('getStoreId')->willReturn(1);
+        $order->method('getGrandTotal')->willReturn(10.00);
+        $order->method('getState')->willReturn(Order::STATE_PENDING_PAYMENT);
+        $order->method('getStatus')->willReturn('pending_payment');
+        $order->method('getIncrementId')->willReturn('000000401');
+        $order->method('getPayment')->willReturn($orderPayment);
+
+        $collection = $this->createMock(OrderCollection::class);
+        $collection->method('addFieldToFilter')->willReturnSelf();
+        $collection->method('setPageSize')->willReturnSelf();
+        $collection->method('getFirstItem')->willReturn($order);
+        $this->orderCollectionFactory->method('create')->willReturn($collection);
+
+        // Validator returns the receipt-shape directly (no `body` wrapper).
+        $this->callbackValidator->method('validate')->willReturn([
+            'valid' => true,
+            'status' => 'completed',
+            'data' => [
+                'order_status' => ['key' => 'completed'],
+                'purchase_units' => ['total_amount' => 99.99],
+            ],
+        ]);
+
+        $this->logger->expects(self::atLeastOnce())->method('critical');
+
+        $this->buildController()->execute();
+
+        self::assertSame('AMOUNT_MISMATCH', $this->lastContents);
+        self::assertSame(400, $this->lastStatus);
+    }
+
     private function buildController(): Callback
     {
         return new Callback(

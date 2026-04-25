@@ -166,11 +166,16 @@ class Callback implements HttpPostActionInterface, CsrfAwareActionInterface
 
     /**
      * BUG-BOG-10: map controller response-body sentinels to HTTP status codes.
+     *
+     * Session 8 P2.1 added AMOUNT_MISMATCH (cart edited mid-flow). Like
+     * VALIDATION_FAILED it's a do-not-retry situation — the discrepancy is
+     * either a tampered request or a stale callback for a re-priced order;
+     * either way exponential backoff at BOG won't fix it.
      */
     private function httpStatusFor(string $contents): int
     {
         return match ($contents) {
-            'VALIDATION_FAILED' => 400,
+            'VALIDATION_FAILED', 'AMOUNT_MISMATCH' => 400,
             'ERROR' => 500,
             default => 200,
         };
@@ -259,8 +264,75 @@ class Callback implements HttpPostActionInterface, CsrfAwareActionInterface
             return 'VALIDATION_FAILED';
         }
 
+        // Session 8 P2.1 edge-case #6: defend against order-amount-changes-mid-flow.
+        // BOG occasionally emits the captured amount in
+        // body.purchase_units.total_amount; if it disagrees with the local
+        // Magento order's grand_total by more than 1 tetri, the customer (or
+        // an attacker) may have edited the cart in a different tab between
+        // initiation and capture. Refuse to process; the reconciler will hold
+        // the order and an admin can reconcile manually.
+        $mismatch = $this->amountMismatch($order, $validation['data'] ?? []);
+        if ($mismatch !== null) {
+            $this->logger->critical(
+                'BOG callback: amount mismatch — possible cart-edit-mid-flow',
+                [
+                    'order_id'           => $order->getIncrementId(),
+                    'bog_order_id'       => $bogOrderId,
+                    'bog_amount_minor'   => $mismatch['bog_minor'],
+                    'order_amount_minor' => $mismatch['order_minor'],
+                    'difference_minor'   => $mismatch['diff_minor'],
+                ]
+            );
+            return 'AMOUNT_MISMATCH';
+        }
+
         $this->processSuccessfulPayment($order, $bogOrderId, $validation);
         return 'OK';
+    }
+
+    /**
+     * Compare the BOG-reported total against the Magento order's grand_total.
+     * Returns null if amounts agree (within 1 tetri tolerance for rounding)
+     * OR if BOG did not report an amount (defensive — null fields are common
+     * across status types). Returns the diff payload when a real mismatch is
+     * detected, for the caller to log + reject.
+     *
+     * Integer-tetri math throughout — never compare floats on money
+     * (CLAUDE.md proactive standards #6).
+     *
+     * Tree-depth contract (Session 8 Pass-1 reviewer M-1 fix):
+     *   The signature path of `CallbackValidator::validate()` returns the
+     *   FULL callback envelope as `validation['data']` — i.e. the
+     *   {event, zoned_request_time, body: {...}} shape. The status-API
+     *   fallback path returns the receipt response, which may or may not
+     *   carry a top-level `body` key depending on the BOG endpoint version.
+     *   We therefore unwrap `body` when present (matches the convention of
+     *   `CallbackValidator::extractOrderStatusKey()` at line 113).
+     *
+     * @param array<string, mixed> $data validation['data'] from CallbackValidator.
+     * @return array{bog_minor: int, order_minor: int, diff_minor: int}|null
+     */
+    private function amountMismatch(Order $order, array $data): ?array
+    {
+        // Unwrap the new BOG envelope shape ({event, body: {...}}) to match
+        // the legacy flat shape — same defensive pattern the validator uses.
+        $container = is_array($data['body'] ?? null) ? $data['body'] : $data;
+        $bogAmount = $container['purchase_units']['total_amount']
+            ?? $container['amount']
+            ?? null;
+        if ($bogAmount === null || !is_numeric($bogAmount)) {
+            return null;
+        }
+        $bogMinor = (int) round(((float) $bogAmount) * 100);
+        $orderMinor = (int) round(((float) $order->getGrandTotal()) * 100);
+        if (abs($bogMinor - $orderMinor) <= 1) {
+            return null;
+        }
+        return [
+            'bog_minor'   => $bogMinor,
+            'order_minor' => $orderMinor,
+            'diff_minor'  => $bogMinor - $orderMinor,
+        ];
     }
 
     /**
