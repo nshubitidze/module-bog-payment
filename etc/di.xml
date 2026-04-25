@@ -108,14 +108,23 @@
         </arguments>
     </virtualType>
 
-    <!-- Refund Command -->
+    <!-- Refund Command.
+         Session 8 Priority 1.1: NO validator. The
+         `Magento\Payment\Gateway\Command\GatewayCommand::execute` pipeline
+         calls the validator AFTER the client and BEFORE the handler — a
+         non-2xx response would short-circuit through `processErrors()` as a
+         `CommandException` and the handler would never reach the
+         `UserFacingErrorMapper`. The handler is the sole gatekeeper for
+         refund failures so it can route raw BOG envelopes through the
+         friendly-error mapper. Regression-guarded by
+         `Test/Unit/Gateway/Command/RefundCommandPipelineTest`. Mirrors TBC
+         reviewer-signoff M-1. -->
     <virtualType name="ShuboBogRefundCommand" type="Magento\Payment\Gateway\Command\GatewayCommand">
         <arguments>
             <argument name="requestBuilder" xsi:type="object">Shubo\BogPayment\Gateway\Request\RefundRequestBuilder</argument>
             <argument name="transferFactory" xsi:type="object">Shubo\BogPayment\Gateway\Http\TransferFactory</argument>
             <argument name="client" xsi:type="object">Shubo\BogPayment\Gateway\Http\Client\RefundClient</argument>
             <argument name="handler" xsi:type="object">Shubo\BogPayment\Gateway\Response\RefundHandler</argument>
-            <argument name="validator" xsi:type="object">Shubo\BogPayment\Gateway\Validator\ResponseValidator</argument>
         </arguments>
     </virtualType>
 
@@ -134,6 +143,15 @@
     </type>
 
     <type name="Shubo\BogPayment\Gateway\Http\Client\RefundClient">
+        <arguments>
+            <argument name="logger" xsi:type="object">ShuboBogPaymentLogger</argument>
+        </arguments>
+    </type>
+
+    <!-- Session 8 Priority 1.1 — RefundHandler routes BOG-side refund failures
+         through UserFacingErrorMapper. Dedicated logger so the raw triple
+         lands in the BOG payment log alongside the rest of the refund trace. -->
+    <type name="Shubo\BogPayment\Gateway\Response\RefundHandler">
         <arguments>
             <argument name="logger" xsi:type="object">ShuboBogPaymentLogger</argument>
         </arguments>
@@ -227,6 +245,8 @@
     </type>
 
     <!-- Admin Controllers -->
+    <!-- Session 8 P2.2 — UserFacingErrorMapper retrofit so admin no longer
+         sees raw BOG API exception text in toast messages. -->
     <type name="Shubo\BogPayment\Controller\Adminhtml\Order\CheckStatus">
         <arguments>
             <argument name="logger" xsi:type="object">ShuboBogPaymentLogger</argument>

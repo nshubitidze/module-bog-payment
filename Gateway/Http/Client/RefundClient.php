@@ -12,6 +12,25 @@ use Psr\Log\LoggerInterface;
 use Shubo\BogPayment\Gateway\Config\Config;
 use Shubo\BogPayment\Model\OAuthTokenProvider;
 
+/**
+ * Client for the new BOG Payments API refund endpoint.
+ *
+ *   POST  {api_url}/payment/refund/{bog_order_id}
+ *   body  {"amount": "10.00"}
+ *
+ * Session 8 Priority 1.1 — the prior implementation POSTed to
+ * `${api_url}/checkout/refund` with body `{order_id, amount}`. That was the
+ * legacy iPay shape and 404'd against the new Payments API.
+ *
+ * The body produced by `RefundRequestBuilder` carries `order_id` so the
+ * client can construct the URL; we strip it before sending so the wire
+ * payload matches BOG's documented schema.
+ *
+ * On non-2xx, the response is returned to the handler with `http_status`
+ * embedded — the handler routes through `UserFacingErrorMapper`. NO
+ * exception thrown here for non-2xx; only for hard transport failures
+ * (curl exception, malformed JSON) where the pipeline cannot continue.
+ */
 class RefundClient implements ClientInterface
 {
     public function __construct(
@@ -34,8 +53,23 @@ class RefundClient implements ClientInterface
         /** @var array<string, mixed> $body */
         $body = $transferObject->getBody();
 
+        $bogOrderId = (string) ($body['order_id'] ?? '');
+        if ($bogOrderId === '') {
+            // RefundRequestBuilder guards this earlier; a missing id at this
+            // point is a programming error worth surfacing loudly.
+            throw new LocalizedException(
+                __('BOG refund request is missing the bog_order_id — cannot construct refund URL.')
+            );
+        }
+
+        // Strip from the wire body — the new API takes `order_id` in the URL only.
+        unset($body['order_id']);
+
+        $url = $this->config->getRefundUrl($bogOrderId);
+
         $this->logger->debug('BOG refund request', [
-            'url' => $this->config->getRefundUrl(),
+            'url' => $url,
+            'bog_order_id' => $bogOrderId,
             'body' => $body,
         ]);
 
@@ -48,7 +82,7 @@ class RefundClient implements ClientInterface
         $jsonBody = json_encode($body, JSON_THROW_ON_ERROR);
 
         try {
-            $curl->post($this->config->getRefundUrl(), $jsonBody);
+            $curl->post($url, $jsonBody);
         } catch (\Exception $e) {
             $this->logger->error('BOG refund HTTP request failed', [
                 'exception' => $e->getMessage(),
@@ -70,12 +104,14 @@ class RefundClient implements ClientInterface
         $response = json_decode($responseBody, true);
 
         if (!is_array($response)) {
-            throw new LocalizedException(
-                __('Invalid refund response from BOG Payments API.')
-            );
+            // Non-JSON or empty response — synthesize a minimal envelope so
+            // the handler can route it through UserFacingErrorMapper instead
+            // of crashing.
+            $response = ['raw_body' => (string) $responseBody];
         }
 
         $response['http_status'] = $statusCode;
+        $response['bog_order_id'] = $bogOrderId;
 
         return $response;
     }

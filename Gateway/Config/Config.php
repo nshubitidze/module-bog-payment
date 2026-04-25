@@ -217,9 +217,21 @@ class Config extends GatewayConfig
         return $this->getEffectiveApiUrl($storeId) . '/ecommerce/orders';
     }
 
-    public function getRefundUrl(?int $storeId = null): string
+    /**
+     * Refund endpoint for the new BOG Payments API:
+     *   POST {api_url}/payment/refund/{order_id}     body: {amount}
+     *
+     * Session 8 Priority 1.1 fix — the prior signature was
+     * `getRefundUrl(?int $storeId = null)` returning
+     * `${api_url}/checkout/refund`, the LEGACY iPay form-encoded endpoint
+     * (Bog used to expose at `ipay.ge/opay/api/v1`). The current default
+     * `api_url` (`https://api.bog.ge/payments/v1`) does not host that
+     * legacy path; refund attempts 404'd. The new shape carries the BOG
+     * order_id in the URL and only `amount` in the body.
+     */
+    public function getRefundUrl(string $bogOrderId, ?int $storeId = null): string
     {
-        return $this->getEffectiveApiUrl($storeId) . '/checkout/refund';
+        return $this->getEffectiveApiUrl($storeId) . '/payment/refund/' . $bogOrderId;
     }
 
     /**
