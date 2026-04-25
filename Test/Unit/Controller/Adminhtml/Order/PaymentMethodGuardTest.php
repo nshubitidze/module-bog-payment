@@ -20,6 +20,7 @@ use Shubo\BogPayment\Controller\Adminhtml\Order\Capture;
 use Shubo\BogPayment\Controller\Adminhtml\Order\CheckStatus;
 use Shubo\BogPayment\Controller\Adminhtml\Order\VoidPayment;
 use Shubo\BogPayment\Gateway\Config\Config;
+use Shubo\BogPayment\Gateway\Error\UserFacingErrorMapper;
 use Shubo\BogPayment\Gateway\Http\Client\CaptureClient;
 use Shubo\BogPayment\Gateway\Http\Client\StatusClient;
 use Shubo\BogPayment\Model\Ui\ConfigProvider;
@@ -91,6 +92,7 @@ class PaymentMethodGuardTest extends TestCase
             $this->orderRepository,
             $captureClient,
             $this->logger,
+            $this->createMock(UserFacingErrorMapper::class),
         );
 
         $controller->execute();
@@ -113,6 +115,7 @@ class PaymentMethodGuardTest extends TestCase
             $this->orderRepository,
             $captureClient,
             $this->logger,
+            $this->createMock(UserFacingErrorMapper::class),
         );
 
         $controller->execute();
@@ -175,6 +178,7 @@ class PaymentMethodGuardTest extends TestCase
             $this->createMock(Config::class),
             $this->createMock(OrderSender::class),
             $this->logger,
+            $this->createMock(UserFacingErrorMapper::class),
         );
 
         $controller->execute();
@@ -199,6 +203,7 @@ class PaymentMethodGuardTest extends TestCase
             $this->createMock(Config::class),
             $this->createMock(OrderSender::class),
             $this->logger,
+            $this->createMock(UserFacingErrorMapper::class),
         );
 
         $controller->execute();
@@ -223,6 +228,7 @@ class PaymentMethodGuardTest extends TestCase
             $this->orderRepository,
             $captureClient,
             $this->logger,
+            $this->createMock(UserFacingErrorMapper::class),
         );
 
         $controller->execute();

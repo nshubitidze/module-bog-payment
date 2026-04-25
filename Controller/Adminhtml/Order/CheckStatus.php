@@ -14,6 +14,8 @@ use Magento\Sales\Model\Order\Email\Sender\OrderSender;
 use Magento\Sales\Model\Order\Payment;
 use Psr\Log\LoggerInterface;
 use Shubo\BogPayment\Gateway\Config\Config;
+use Shubo\BogPayment\Gateway\Error\UserFacingErrorMapper;
+use Shubo\BogPayment\Gateway\Exception\BogApiException;
 use Shubo\BogPayment\Gateway\Http\Client\StatusClient;
 use Shubo\BogPayment\Model\Ui\ConfigProvider;
 use Shubo\BogPayment\Service\MoneyCaster;
@@ -35,6 +37,7 @@ class CheckStatus extends Action
         private readonly Config $config,
         private readonly OrderSender $orderSender,
         private readonly LoggerInterface $logger,
+        private readonly UserFacingErrorMapper $userFacingErrorMapper,
     ) {
         parent::__construct($context);
     }
@@ -97,13 +100,46 @@ class CheckStatus extends Action
                     (string) __('Payment %1. Order has been cancelled.', $orderStatusKey)
                 );
             }
+        } catch (BogApiException $e) {
+            // Session 8 P2.2 — never surface raw API exception text to admin.
+            // Log the raw triple so support can correlate, then route the
+            // friendly mapped message to the toast.
+            $this->logger->error('BOG HTTP error mapped to user copy', [
+                'context' => 'admin.checkstatus',
+                'order_id' => $orderId,
+                'exception_class' => $e::class,
+                'raw_message' => $e->getMessage(),
+            ]);
+            // BogApiException doesn't carry an HTTP code today; default to 0
+            // (network-error bucket) so the admin sees a sympathetic message.
+            $friendly = $this->userFacingErrorMapper->toLocalizedException(
+                0,
+                $e->getMessage(),
+            );
+            $this->messageManager->addErrorMessage($friendly->getMessage());
+        } catch (LocalizedException $e) {
+            // Magento LocalizedException is by convention author-safe (built
+            // via __()); message text is allowed to flow through to admin.
+            $this->logger->error('BOG admin status check — LocalizedException', [
+                'order_id' => $orderId,
+                'exception_class' => $e::class,
+                'message' => $e->getMessage(),
+            ]);
+            $this->messageManager->addErrorMessage($e->getMessage());
         } catch (\Exception $e) {
+            // Pass-1 reviewer S-1 (mirror of TBC Pass-4 S-4): never leak
+            // raw exception text from a generic catch. Log the full triple
+            // to the dedicated BOG log; admin sees a bland but no-leak msg.
             $this->logger->error('BOG admin status check failed', [
                 'order_id' => $orderId,
+                'exception_class' => $e::class,
                 'error' => $e->getMessage(),
+                'trace' => $e->getTraceAsString(),
             ]);
             $this->messageManager->addErrorMessage(
-                (string) __('Status check failed: %1', $e->getMessage())
+                (string) __(
+                    'Status check failed. See shubo_bog_payment.log for details.'
+                )
             );
         }
 
