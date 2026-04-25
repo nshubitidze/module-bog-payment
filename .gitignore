@@ -1,0 +1,21 @@
+# Secrets / credentials — never commit
+.env
+.env.*
+*.token
+secrets/
+
+# Build / runtime artifacts
+/vendor/
+/var/
+/generated/
+/composer.lock
+.phpunit.cache/
+.phpunit.result.cache
+
+# IDE / OS
+/.idea/
+/.vscode/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
