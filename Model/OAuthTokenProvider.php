@@ -4,7 +4,7 @@ declare(strict_types=1);
 
 namespace Shubo\BogPayment\Model;
 
-use Magento\Framework\App\CacheInterface;
+use Magento\Framework\Cache\FrontendInterface;
 use Magento\Framework\Exception\LocalizedException;
 use Magento\Framework\HTTP\Client\CurlFactory;
 use Psr\Log\LoggerInterface;
@@ -13,12 +13,24 @@ use Shubo\BogPayment\Gateway\Config\Config;
 /**
  * OAuth2 client-credentials token provider for the BOG Payments API.
  *
- * BUG-BOG-9: tokens are cached per-storeId in Magento's persistent cache pool
- * (`cache.static` → `Magento\Framework\App\CacheInterface`) so:
+ * BUG-BOG-9: tokens are cached per-storeId in Magento's persistent `config`
+ * cache pool (`Magento\Framework\App\Cache\Type\Config`, which implements
+ * `Magento\Framework\Cache\FrontendInterface`) so:
  *   - multi-storefront deployments with different BOG client creds never
  *     cross-pollinate tokens (storeId A's token must not be used for storeId B);
  *   - PHP-FPM workers share the token across requests (in-memory cache alone
  *     would re-auth on every worker cold start).
+ *
+ * Why `FrontendInterface` and not `Magento\Framework\App\CacheInterface`:
+ * the di.xml wires `Magento\Framework\App\Cache\Type\Config` here, and
+ * `Type\Config extends TagScope`, which implements `FrontendInterface`
+ * but NOT `App\CacheInterface`. Typing the argument as `App\CacheInterface`
+ * fires a hard TypeError on every instantiation — observed on prod as
+ * 486 `main.CRITICAL: Type Error occurred when creating object` lines in
+ * `system.log` per 24h window, crashing `shubo_bog_pending_order_reconciler`
+ * every 5 min. `FrontendInterface` is the accurate contract: it exposes
+ * `load/save/remove/clean` with identical signatures to what this class
+ * calls.
  *
  * Cache payload is a small JSON blob `{ access_token, expires_at }`; the wire
  * TTL is `expires_in - TOKEN_TTL_BUFFER_SECONDS` (60 s) so we always refetch
@@ -36,7 +48,7 @@ class OAuthTokenProvider
         private readonly Config $config,
         private readonly CurlFactory $curlFactory,
         private readonly LoggerInterface $logger,
-        private readonly CacheInterface $cache,
+        private readonly FrontendInterface $cache,
     ) {
     }
 

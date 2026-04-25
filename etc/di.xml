@@ -16,7 +16,7 @@
         <arguments>
             <argument name="methodCode" xsi:type="const">Shubo\BogPayment\Gateway\Config\Config::METHOD_CODE</argument>
             <!-- BUG-BOG-15: environment-aware API URL resolver -->
-            <argument name="apiUrlResolver" xsi:type="object">Shubo\BogPayment\Gateway\Config\ApiUrlResolver</argument>
+            <argument name="apiUrlResolver" xsi:type="object">Shubo\BogPayment\Gateway\Config\ApiUrlResolver\Proxy</argument>
         </arguments>
     </type>
 
@@ -164,11 +164,18 @@
         </arguments>
     </type>
 
-    <!-- BUG-BOG-9: per-storeId OAuth token cache.
+    <!-- BUG-BOG-9 / BUG-BOG-OAUTH-CACHE-TYPE: per-storeId OAuth token cache.
          Uses Magento\Framework\App\Cache\Type\Config (the `config` cache
          type, frontend `cache.static` under the hood) — persistent across
          PHP-FPM workers, cleared via `bin/magento cache:clean config`
-         whenever BOG credentials are rotated. -->
+         whenever BOG credentials are rotated.
+
+         NOTE: the constructor argument is typed `Magento\Framework\Cache\FrontendInterface`
+         (not `Magento\Framework\App\CacheInterface`). `Type\Config extends TagScope`,
+         which implements FrontendInterface. An earlier commit typed the arg
+         as `App\CacheInterface` and crashed every `pending_order_reconciler`
+         tick for ~8 h until Session 2 (2026-04-23) caught it via system.log
+         grep (486 `Type Error` lines / 24h). -->
     <type name="Shubo\BogPayment\Model\OAuthTokenProvider">
         <arguments>
             <argument name="logger" xsi:type="object">ShuboBogPaymentLogger</argument>
