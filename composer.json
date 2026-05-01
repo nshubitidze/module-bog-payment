@@ -3,6 +3,19 @@
     "description": "Bank of Georgia (BOG) iPay payment integration for Duka marketplace",
     "type": "magento2-module",
     "license": "Apache-2.0",
+    "keywords": ["magento2", "payment", "bog", "ipay", "georgia"],
+    "authors": [
+        {
+            "name": "Shubo",
+            "homepage": "https://github.com/nshubitidze/module-bog-payment",
+            "role": "Maintainer"
+        }
+    ],
+    "homepage": "https://github.com/nshubitidze/module-bog-payment",
+    "support": {
+        "issues": "https://github.com/nshubitidze/module-bog-payment/issues",
+        "source": "https://github.com/nshubitidze/module-bog-payment"
+    },
     "require": {
         "php": ">=8.4",
         "magento/framework": "^103.0",
