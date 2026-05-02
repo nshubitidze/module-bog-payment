@@ -7,25 +7,17 @@ namespace Shubo\BogPayment\Test\Unit\Controller\Payment;
 use Magento\Framework\App\Request\Http as HttpRequest;
 use Magento\Framework\Controller\Result\Raw;
 use Magento\Framework\Controller\Result\RawFactory;
-use Magento\Framework\DB\Adapter\AdapterInterface;
-use Magento\Framework\DB\Select;
-use Magento\Framework\App\ResourceConnection;
-use Magento\Quote\Api\CartManagementInterface;
-use Magento\Quote\Api\CartRepositoryInterface;
-use Magento\Quote\Model\Quote;
-use Magento\Quote\Model\Quote\Payment as QuotePayment;
 use Magento\Sales\Api\OrderRepositoryInterface;
 use Magento\Sales\Model\Order;
 use Magento\Sales\Model\Order\Email\Sender\OrderSender;
 use Magento\Sales\Model\Order\Payment;
-use Magento\Sales\Model\ResourceModel\Order\Collection as OrderCollection;
-use Magento\Sales\Model\ResourceModel\Order\CollectionFactory as OrderCollectionFactory;
 use PHPUnit\Framework\MockObject\MockObject;
 use PHPUnit\Framework\TestCase;
 use Psr\Log\LoggerInterface;
 use Shubo\BogPayment\Controller\Payment\Callback;
 use Shubo\BogPayment\Gateway\Config\Config;
 use Shubo\BogPayment\Gateway\Validator\CallbackValidator;
+use Shubo\BogPayment\Service\BogOrderResolver;
 use Shubo\BogPayment\Service\PaymentLock;
 
 /**
@@ -37,28 +29,27 @@ use Shubo\BogPayment\Service\PaymentLock;
  *                and return ALREADY_PROCESSED without re-capturing.
  *
  *   BUG-BOG-7  — lookup by bog_order_id alone. When `external_order_id` is
- *                missing from the callback, the controller must join
- *                sales_order_payment.additional_information LIKE
- *                '%"bog_order_id":"<id>"%' to resolve the order.
+ *                missing from the callback, the controller delegates to
+ *                BogOrderResolver, which JOINs sales_order_payment.additional_information
+ *                LIKE '%"bog_order_id":"<id>"%' to resolve the order. The
+ *                resolver's JSON-LIKE behaviour is asserted in BogOrderResolverTest.
  *
  *   BUG-BOG-11b — materialize the Magento order from a quote carrying
  *                 bog_order_id when the callback terminally confirms success
- *                 but no order exists yet.
+ *                 but no order exists yet. Resolver delegate; the orchestration
+ *                 contract (terminal-success guard) is asserted here.
  */
 class CallbackTest extends TestCase
 {
     private HttpRequest&MockObject $request;
     private RawFactory&MockObject $rawFactory;
     private CallbackValidator&MockObject $callbackValidator;
-    private OrderCollectionFactory&MockObject $orderCollectionFactory;
     private OrderRepositoryInterface&MockObject $orderRepository;
     private OrderSender&MockObject $orderSender;
     private Config&MockObject $config;
     private LoggerInterface&MockObject $logger;
-    private ResourceConnection&MockObject $resourceConnection;
-    private CartManagementInterface&MockObject $cartManagement;
-    private CartRepositoryInterface&MockObject $cartRepository;
     private PaymentLock&MockObject $paymentLock;
+    private BogOrderResolver&MockObject $bogOrderResolver;
     private Raw&MockObject $rawResult;
 
     private string $lastContents = '';
@@ -69,15 +60,12 @@ class CallbackTest extends TestCase
         $this->request = $this->createMock(HttpRequest::class);
         $this->rawFactory = $this->createMock(RawFactory::class);
         $this->callbackValidator = $this->createMock(CallbackValidator::class);
-        $this->orderCollectionFactory = $this->createMock(OrderCollectionFactory::class);
         $this->orderRepository = $this->createMock(OrderRepositoryInterface::class);
         $this->orderSender = $this->createMock(OrderSender::class);
         $this->config = $this->createMock(Config::class);
         $this->logger = $this->createMock(LoggerInterface::class);
-        $this->resourceConnection = $this->createMock(ResourceConnection::class);
-        $this->cartManagement = $this->createMock(CartManagementInterface::class);
-        $this->cartRepository = $this->createMock(CartRepositoryInterface::class);
         $this->paymentLock = $this->createMock(PaymentLock::class);
+        $this->bogOrderResolver = $this->createMock(BogOrderResolver::class);
         $this->rawResult = $this->createMock(Raw::class);
 
         $this->rawFactory->method('create')->willReturn($this->rawResult);
@@ -96,100 +84,6 @@ class CallbackTest extends TestCase
         $this->paymentLock->method('withLock')->willReturnCallback(
             static fn(string $key, callable $fn): mixed => $fn()
         );
-    }
-
-    /**
-     * BUG-BOG-7: when the BOG callback arrives with only `order_id` (no
-     * `external_order_id`), the controller must JOIN on
-     * sales_order_payment.additional_information to find the Magento order.
-     * Before the fix this was a stub that only logged and returned null.
-     *
-     * Magento 2.4.8 stores additional_information as JSON via
-     * Magento\Framework\Serialize\Serializer\Json; the JSON LIKE pattern
-     * `%"bog_order_id":"<id>"%` is what matches.
-     */
-    public function testFindOrderByBogOrderIdQueriesPaymentAdditionalInformation(): void
-    {
-        $rawBody = json_encode([
-            'event' => 'order_payment',
-            'body' => [
-                'order_id' => 'BOG-XYZ',
-                'order_status' => ['key' => 'completed'],
-                // no external_order_id
-            ],
-        ], JSON_THROW_ON_ERROR);
-
-        $this->request->method('getContent')->willReturn($rawBody);
-        $this->request->method('getHeader')->willReturn(false);
-
-        // No hit on increment_id path:
-        $emptyCollection = $this->createMock(OrderCollection::class);
-        $emptyCollection->method('addFieldToFilter')->willReturnSelf();
-        $emptyCollection->method('setPageSize')->willReturnSelf();
-        $emptyFirst = $this->createMock(Order::class);
-        $emptyFirst->method('getId')->willReturn(null);
-        $emptyCollection->method('getFirstItem')->willReturn($emptyFirst);
-        // No call expected: we skip the increment_id path when
-        // external_order_id is empty.
-        $this->orderCollectionFactory->expects(self::never())->method('create');
-
-        // DB connection must be asked the JSON LIKE query.
-        $adapter = $this->createMock(AdapterInterface::class);
-        $this->resourceConnection->method('getConnection')->willReturn($adapter);
-        $this->resourceConnection->method('getTableName')
-            ->willReturnCallback(static fn(string $t): string => $t);
-
-        $select = $this->createMock(Select::class);
-        $select->method('from')->willReturnSelf();
-        $select->method('where')->willReturnSelf();
-        $select->method('limit')->willReturnSelf();
-        $adapter->method('select')->willReturn($select);
-
-        // The crucial assertion: the query is bound with a LIKE pattern that
-        // references the bog_order_id AND the sales_order_payment table.
-        $adapter->expects(self::atLeastOnce())
-            ->method('fetchOne')
-            ->willReturnCallback(function (Select $s, array $binds) {
-                self::assertArrayHasKey('needle', $binds);
-                self::assertStringContainsString('BOG-XYZ', (string) $binds['needle']);
-                self::assertStringStartsWith('%', (string) $binds['needle']);
-                self::assertStringEndsWith('%', (string) $binds['needle']);
-                return '777'; // parent_id (order entity_id)
-            });
-
-        // OrderRepository::get returns a fresh pending order.
-        $orderPayment = $this->createMock(Payment::class);
-        $orderPayment->method('setAdditionalInformation')->willReturnSelf();
-        $orderPayment->method('setTransactionId')->willReturnSelf();
-        $orderPayment->method('setIsTransactionPending')->willReturnSelf();
-        $orderPayment->method('setIsTransactionClosed')->willReturnSelf();
-        $orderPayment->method('registerCaptureNotification')->willReturnSelf();
-
-        $order = $this->createMock(Order::class);
-        $order->method('getId')->willReturn(777);
-        $order->method('getStoreId')->willReturn(1);
-        $order->method('getState')->willReturn(Order::STATE_PENDING_PAYMENT);
-        $order->method('getStatus')->willReturn('pending_payment');
-        $order->method('getIncrementId')->willReturn('000000042');
-        $order->method('getGrandTotal')->willReturn(100.0);
-        $order->method('getBaseGrandTotal')->willReturn(100.0);
-        $order->method('getPayment')->willReturn($orderPayment);
-        $order->method('addCommentToStatusHistory')->willReturnSelf();
-        $order->method('setState')->willReturnSelf();
-        $order->method('setStatus')->willReturnSelf();
-
-        $this->orderRepository->expects(self::atLeastOnce())->method('get')->with(777)->willReturn($order);
-
-        $this->callbackValidator->method('validate')->willReturn([
-            'valid' => true,
-            'status' => 'completed',
-            'data' => [],
-        ]);
-        $this->config->method('isPreauth')->willReturn(false);
-
-        $this->buildController()->execute();
-
-        self::assertSame('OK', $this->lastContents);
     }
 
     /**
@@ -220,11 +114,7 @@ class CallbackTest extends TestCase
         $order->method('getIncrementId')->willReturn('000000099');
         $order->method('getPayment')->willReturn($orderPayment);
 
-        $collection = $this->createMock(OrderCollection::class);
-        $collection->method('addFieldToFilter')->willReturnSelf();
-        $collection->method('setPageSize')->willReturnSelf();
-        $collection->method('getFirstItem')->willReturn($order);
-        $this->orderCollectionFactory->method('create')->willReturn($collection);
+        $this->bogOrderResolver->method('findOrder')->willReturn($order);
 
         // The capture path must never be exercised.
         $orderPayment->expects(self::never())->method('registerCaptureNotification');
@@ -260,48 +150,6 @@ class CallbackTest extends TestCase
         $this->request->method('getContent')->willReturn($rawBody);
         $this->request->method('getHeader')->willReturn(false);
 
-        // increment_id lookup returns an empty row → no order.
-        $emptyFirst = $this->createMock(Order::class);
-        $emptyFirst->method('getId')->willReturn(null);
-        $collection = $this->createMock(OrderCollection::class);
-        $collection->method('addFieldToFilter')->willReturnSelf();
-        $collection->method('setPageSize')->willReturnSelf();
-        $collection->method('getFirstItem')->willReturn($emptyFirst);
-        $this->orderCollectionFactory->method('create')->willReturn($collection);
-
-        // Adapter returns no order_id for the bog_order_id JSON LIKE → fall
-        // through to the quote lookup, which DOES find a pending quote.
-        $adapter = $this->createMock(AdapterInterface::class);
-        $this->resourceConnection->method('getConnection')->willReturn($adapter);
-        $this->resourceConnection->method('getTableName')
-            ->willReturnCallback(static fn(string $t): string => $t);
-        $select = $this->createMock(Select::class);
-        $select->method('from')->willReturnSelf();
-        $select->method('where')->willReturnSelf();
-        $select->method('limit')->willReturnSelf();
-        $select->method('join')->willReturnSelf();
-        $adapter->method('select')->willReturn($select);
-
-        // Stage the two lookups the controller performs: first the payment
-        // table for an order id (returns false), then the quote+payment
-        // table for a quote id (returns '55').
-        $adapter->method('fetchOne')->willReturnOnConsecutiveCalls(false, '55');
-
-        // cartRepository::get is consulted to re-assert method + bog keys on
-        // the quote before placeOrder runs.
-        $quotePayment = $this->createMock(QuotePayment::class);
-        $quotePayment->method('setMethod')->willReturnSelf();
-        $quotePayment->method('setAdditionalInformation')->willReturnSelf();
-        $quote = $this->createMock(Quote::class);
-        $quote->method('getId')->willReturn(55);
-        $quote->method('getPayment')->willReturn($quotePayment);
-        $this->cartRepository->method('get')->with(55)->willReturn($quote);
-        $this->cartRepository->method('save')->willReturn($quote);
-
-        // placeOrder must be called exactly once with quote_id=55.
-        $this->cartManagement->expects(self::once())->method('placeOrder')
-            ->with(55)->willReturn(777);
-
         // After placeOrder, the normal success path: load the fresh order.
         $orderPayment = $this->createMock(Payment::class);
         $orderPayment->method('setAdditionalInformation')->willReturnSelf();
@@ -322,7 +170,14 @@ class CallbackTest extends TestCase
         $order->method('setState')->willReturnSelf();
         $order->method('setStatus')->willReturnSelf();
 
-        $this->orderRepository->method('get')->willReturn($order);
+        // Resolver-side wiring: increment_id path misses, quote lookup hits
+        // quote_id=55, materialise returns the fresh order. The placeOrder
+        // contract (cartManagement->placeOrder(55)) is asserted in
+        // BogOrderResolverTest::testMaterializeOrderFromQuoteCallsPlaceOrderWithQuoteId.
+        $this->bogOrderResolver->method('findOrder')->willReturn(null);
+        $this->bogOrderResolver->method('findQuoteIdByBogOrderId')->willReturn(55);
+        $this->bogOrderResolver->expects(self::once())
+            ->method('materializeOrderFromQuote')->with(55, 'BOG-MAT')->willReturn($order);
 
         $this->callbackValidator->method('validate')->willReturn([
             'valid' => true,
@@ -355,30 +210,11 @@ class CallbackTest extends TestCase
         $this->request->method('getContent')->willReturn($rawBody);
         $this->request->method('getHeader')->willReturn(false);
 
-        // increment_id lookup returns empty.
-        $emptyFirst = $this->createMock(Order::class);
-        $emptyFirst->method('getId')->willReturn(null);
-        $collection = $this->createMock(OrderCollection::class);
-        $collection->method('addFieldToFilter')->willReturnSelf();
-        $collection->method('setPageSize')->willReturnSelf();
-        $collection->method('getFirstItem')->willReturn($emptyFirst);
-        $this->orderCollectionFactory->method('create')->willReturn($collection);
-
-        // Adapter fetchOne returns false (no order, quote lookup irrelevant).
-        $adapter = $this->createMock(AdapterInterface::class);
-        $this->resourceConnection->method('getConnection')->willReturn($adapter);
-        $this->resourceConnection->method('getTableName')
-            ->willReturnCallback(static fn(string $t): string => $t);
-        $select = $this->createMock(Select::class);
-        $select->method('from')->willReturnSelf();
-        $select->method('where')->willReturnSelf();
-        $select->method('limit')->willReturnSelf();
-        $select->method('join')->willReturnSelf();
-        $adapter->method('select')->willReturn($select);
-        $adapter->method('fetchOne')->willReturn(false);
-
-        // No placeOrder for non-terminal status.
-        $this->cartManagement->expects(self::never())->method('placeOrder');
+        // Resolver returns no order; controller must NOT ask the resolver to
+        // materialise because status is non-terminal.
+        $this->bogOrderResolver->method('findOrder')->willReturn(null);
+        $this->bogOrderResolver->expects(self::never())->method('findQuoteIdByBogOrderId');
+        $this->bogOrderResolver->expects(self::never())->method('materializeOrderFromQuote');
 
         $this->buildController()->execute();
 
@@ -446,11 +282,7 @@ class CallbackTest extends TestCase
         $order->method('getStoreId')->willReturn(1);
         $order->method('getPayment')->willReturn($orderPayment);
 
-        $collection = $this->createMock(OrderCollection::class);
-        $collection->method('addFieldToFilter')->willReturnSelf();
-        $collection->method('setPageSize')->willReturnSelf();
-        $collection->method('getFirstItem')->willReturn($order);
-        $this->orderCollectionFactory->method('create')->willReturn($collection);
+        $this->bogOrderResolver->method('findOrder')->willReturn($order);
 
         $this->callbackValidator->method('validate')->willReturn([
             'valid' => false,
@@ -478,25 +310,7 @@ class CallbackTest extends TestCase
         $this->request->method('getContent')->willReturn($rawBody);
         $this->request->method('getHeader')->willReturn(false);
 
-        $emptyFirst = $this->createMock(Order::class);
-        $emptyFirst->method('getId')->willReturn(null);
-        $collection = $this->createMock(OrderCollection::class);
-        $collection->method('addFieldToFilter')->willReturnSelf();
-        $collection->method('setPageSize')->willReturnSelf();
-        $collection->method('getFirstItem')->willReturn($emptyFirst);
-        $this->orderCollectionFactory->method('create')->willReturn($collection);
-
-        $adapter = $this->createMock(AdapterInterface::class);
-        $this->resourceConnection->method('getConnection')->willReturn($adapter);
-        $this->resourceConnection->method('getTableName')
-            ->willReturnCallback(static fn(string $t): string => $t);
-        $select = $this->createMock(Select::class);
-        $select->method('from')->willReturnSelf();
-        $select->method('where')->willReturnSelf();
-        $select->method('limit')->willReturnSelf();
-        $select->method('join')->willReturnSelf();
-        $adapter->method('select')->willReturn($select);
-        $adapter->method('fetchOne')->willReturn(false);
+        $this->bogOrderResolver->method('findOrder')->willReturn(null);
 
         $this->buildController()->execute();
 
@@ -525,11 +339,7 @@ class CallbackTest extends TestCase
         $order->method('getIncrementId')->willReturn('000000202');
         $order->method('getPayment')->willReturn($orderPayment);
 
-        $collection = $this->createMock(OrderCollection::class);
-        $collection->method('addFieldToFilter')->willReturnSelf();
-        $collection->method('setPageSize')->willReturnSelf();
-        $collection->method('getFirstItem')->willReturn($order);
-        $this->orderCollectionFactory->method('create')->willReturn($collection);
+        $this->bogOrderResolver->method('findOrder')->willReturn($order);
 
         $this->buildController()->execute();
 
@@ -576,8 +386,8 @@ class CallbackTest extends TestCase
         $this->request->method('getContent')->willReturn($rawBody);
         $this->request->method('getHeader')->willReturn(false);
 
-        // Make orderCollectionFactory blow up to force the catch branch.
-        $this->orderCollectionFactory->method('create')->willThrowException(
+        // Make the resolver blow up inside the lock to force the catch branch.
+        $this->bogOrderResolver->method('findOrder')->willThrowException(
             new \RuntimeException('DB is on fire')
         );
 
@@ -623,11 +433,7 @@ class CallbackTest extends TestCase
         $order->method('getIncrementId')->willReturn('000000301');
         $order->method('getPayment')->willReturn($orderPayment);
 
-        $collection = $this->createMock(OrderCollection::class);
-        $collection->method('addFieldToFilter')->willReturnSelf();
-        $collection->method('setPageSize')->willReturnSelf();
-        $collection->method('getFirstItem')->willReturn($order);
-        $this->orderCollectionFactory->method('create')->willReturn($collection);
+        $this->bogOrderResolver->method('findOrder')->willReturn($order);
 
         // Pass-1 reviewer M-1 fix: validation['data'] carries the FULL
         // callback envelope on the signature path. amountMismatch() unwraps
@@ -705,11 +511,7 @@ class CallbackTest extends TestCase
         $order->method('setState')->willReturnSelf();
         $order->method('setStatus')->willReturnSelf();
 
-        $collection = $this->createMock(OrderCollection::class);
-        $collection->method('addFieldToFilter')->willReturnSelf();
-        $collection->method('setPageSize')->willReturnSelf();
-        $collection->method('getFirstItem')->willReturn($order);
-        $this->orderCollectionFactory->method('create')->willReturn($collection);
+        $this->bogOrderResolver->method('findOrder')->willReturn($order);
 
         // Production shape: validation['data'] is the full envelope with
         // body wrapper (Pass-1 reviewer M-1 fix).
@@ -772,11 +574,7 @@ class CallbackTest extends TestCase
         $order->method('setState')->willReturnSelf();
         $order->method('setStatus')->willReturnSelf();
 
-        $collection = $this->createMock(OrderCollection::class);
-        $collection->method('addFieldToFilter')->willReturnSelf();
-        $collection->method('setPageSize')->willReturnSelf();
-        $collection->method('getFirstItem')->willReturn($order);
-        $this->orderCollectionFactory->method('create')->willReturn($collection);
+        $this->bogOrderResolver->method('findOrder')->willReturn($order);
 
         $this->callbackValidator->method('validate')->willReturn([
             'valid' => true,
@@ -833,11 +631,7 @@ class CallbackTest extends TestCase
         $order->method('getIncrementId')->willReturn('000000400');
         $order->method('getPayment')->willReturn($orderPayment);
 
-        $collection = $this->createMock(OrderCollection::class);
-        $collection->method('addFieldToFilter')->willReturnSelf();
-        $collection->method('setPageSize')->willReturnSelf();
-        $collection->method('getFirstItem')->willReturn($order);
-        $this->orderCollectionFactory->method('create')->willReturn($collection);
+        $this->bogOrderResolver->method('findOrder')->willReturn($order);
 
         // Validator returns the full envelope verbatim — exactly the
         // CallbackValidator signature path's behaviour.
@@ -895,11 +689,7 @@ class CallbackTest extends TestCase
         $order->method('getIncrementId')->willReturn('000000401');
         $order->method('getPayment')->willReturn($orderPayment);
 
-        $collection = $this->createMock(OrderCollection::class);
-        $collection->method('addFieldToFilter')->willReturnSelf();
-        $collection->method('setPageSize')->willReturnSelf();
-        $collection->method('getFirstItem')->willReturn($order);
-        $this->orderCollectionFactory->method('create')->willReturn($collection);
+        $this->bogOrderResolver->method('findOrder')->willReturn($order);
 
         // Validator returns the receipt-shape directly (no `body` wrapper).
         $this->callbackValidator->method('validate')->willReturn([
@@ -925,15 +715,12 @@ class CallbackTest extends TestCase
             request: $this->request,
             rawFactory: $this->rawFactory,
             callbackValidator: $this->callbackValidator,
-            orderCollectionFactory: $this->orderCollectionFactory,
             orderRepository: $this->orderRepository,
             orderSender: $this->orderSender,
             config: $this->config,
             logger: $this->logger,
-            resourceConnection: $this->resourceConnection,
-            cartManagement: $this->cartManagement,
-            cartRepository: $this->cartRepository,
             paymentLock: $this->paymentLock,
+            bogOrderResolver: $this->bogOrderResolver,
         );
     }
 }
