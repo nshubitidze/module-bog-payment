@@ -88,11 +88,14 @@ class PaymentMethodGuardTest extends TestCase
         $captureClient = $this->createMock(CaptureClient::class);
         $captureClient->expects(self::never())->method('capture');
 
+        // Guard 1 fires before the mode check, so Config can be a permissive
+        // mock — getPaymentActionMode is never read on the rejection path.
         $controller = new Capture(
             $this->context,
             $this->orderRepository,
-            $captureClient,
             $this->logger,
+            $this->createMock(Config::class),
+            $captureClient,
             $this->createMock(UserFacingErrorMapper::class),
         );
 
@@ -111,11 +114,13 @@ class PaymentMethodGuardTest extends TestCase
         $captureClient = $this->createMock(CaptureClient::class);
         $captureClient->expects(self::never())->method('capture');
 
+        // Same as above — the null-payment branch short-circuits at guard 1.
         $controller = new Capture(
             $this->context,
             $this->orderRepository,
-            $captureClient,
             $this->logger,
+            $this->createMock(Config::class),
+            $captureClient,
             $this->createMock(UserFacingErrorMapper::class),
         );
 
@@ -225,20 +230,26 @@ class PaymentMethodGuardTest extends TestCase
 
     public function testCorrectPaymentMethodPassesGuard(): void
     {
-        // Positive case on Capture: method == shubo_bog + empty bog_order_id
-        // triggers the next guard ("No BOG order ID"), proving the method
-        // guard did NOT fire.
+        // Positive case on Capture: method == shubo_bog + manual mode +
+        // empty bog_order_id triggers the next guard ("No BOG order ID"),
+        // proving the method guard did NOT fire and the mode check passed.
+        // The mode mock returns 'manual' to skip past the automatic-mode
+        // no-op branch (which would short-circuit to a success message).
         $order = $this->makeOrder(method: ConfigProvider::CODE);
         $this->orderRepository->expects(self::once())->method('get')->with(42)->willReturn($order);
 
         $captureClient = $this->createMock(CaptureClient::class);
         $captureClient->expects(self::never())->method('capture');
 
+        $config = $this->createMock(Config::class);
+        $config->method('getPaymentActionMode')->willReturn('manual');
+
         $controller = new Capture(
             $this->context,
             $this->orderRepository,
-            $captureClient,
             $this->logger,
+            $config,
+            $captureClient,
             $this->createMock(UserFacingErrorMapper::class),
         );
 
