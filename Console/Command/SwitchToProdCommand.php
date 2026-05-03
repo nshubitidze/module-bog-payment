@@ -30,9 +30,10 @@ use Symfony\Component\Console\Output\OutputInterface;
  * contract):
  *   1. Read the real RSA public key provided by BOG from --rsa-key-path;
  *      validate it parses with openssl_pkey_get_public() BEFORE writing
- *      anything. This finally closes BUG-BOG-3 (hardcoded malformed PEM in
- *      CallbackValidator::BOG_PUBLIC_KEY) on launch day by moving the key
- *      to encrypted system config.
+ *      anything. This is the launch-day half of BUG-BOG-3; the structural
+ *      half (removing the hardcoded PEM const from CallbackValidator and
+ *      having the validator read encrypted system config via
+ *      Config::getRsaPublicKey()) shipped 2026-05-03.
  *   2. Encrypt + store the RSA key at payment/shubo_bog/rsa_public_key —
  *      already declared as backend_model=Encrypted in system.xml so the
  *      callback validator can read+decrypt it per request.

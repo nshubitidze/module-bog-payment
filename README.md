@@ -375,7 +375,7 @@ The BOG Payments API uses OAuth2 client credentials grant:
 
 ### Callback Signature Verification
 
-BOG callbacks include a `Callback-Signature` header containing a base64-encoded SHA256withRSA signature. The module verifies this signature using BOG's RSA public key (embedded in the `CallbackValidator` class). If signature verification fails, the module falls back to checking the payment status via the BOG Receipt/Status API.
+BOG callbacks include a `Callback-Signature` header containing a base64-encoded SHA256withRSA signature. The module verifies this signature using BOG's RSA public key, which is loaded from encrypted system config at `payment/shubo_bog/rsa_public_key` (Stores → Configuration → Sales → Payment Methods → BOG Payments → RSA Public Key, or via `bin/magento shubo:payment:switch-to-prod:bog --rsa-key-path=...`). If the key is unset or signature verification fails, the module falls back to checking the payment status via the BOG Receipt/Status API.
 
 ### Events Dispatched
 
@@ -459,9 +459,10 @@ The BOG payment page language is automatically set based on the Magento store lo
 - Check `var/log/shubo_bog_payment.log` for the HTTP response from the token endpoint.
 
 ### Callback signature verification fails
-- The module has BOG's RSA public key embedded. If BOG rotates their key, the `CallbackValidator` class needs to be updated.
+- The RSA public key is loaded from encrypted admin config at `payment/shubo_bog/rsa_public_key`. If BOG rotates their key, paste the new PEM into the admin field (or re-run `bin/magento shubo:payment:switch-to-prod:bog --rsa-key-path=...`) — no code change.
+- An empty config (pre-cutover state) logs at INFO; a malformed PEM logs at WARNING. Both fall through to the Status API.
 - The module falls back to the Status API when signature verification fails, so orders should still process correctly.
-- Check logs for "signature verification failed" messages.
+- Check `var/log/shubo_bog_payment.log` for "signature verification failed" or "not a valid PEM" messages.
 
 ### Refund fails
 - Ensure the BOG order ID is stored on the payment (`bog_order_id` in additional info).

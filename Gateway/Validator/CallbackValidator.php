@@ -15,34 +15,23 @@ use Shubo\BogPayment\Gateway\Http\Client\StatusClient;
  *
  * 1. Primary: SHA256withRSA signature verification (Callback-Signature header)
  * 2. Fallback: checking payment status via the BOG Receipt/Status API
+ *
+ * BUG-BOG-3 (closed): the RSA public key is loaded from encrypted system
+ * config at `payment/shubo_bog/rsa_public_key` via
+ * `Shubo\BogPayment\Gateway\Config\Config::getRsaPublicKey()`. Empty config
+ * is the expected pre-cutover state and silently falls through to the
+ * status-API fallback (info-level log). A configured-but-malformed PEM
+ * raises a warning so the operator notices.
  */
 class CallbackValidator
 {
     private const STATUS_COMPLETED = 'completed';
     private const STATUS_CAPTURED = 'captured';
 
-    /**
-     * BOG public key for SHA256withRSA callback signature verification.
-     *
-     * This is the RSA public key provided by BOG for verifying webhook signatures.
-     * In production, consider loading this from config or a PEM file.
-     */
-    private const BOG_PUBLIC_KEY = <<<'PEM'
------BEGIN PUBLIC KEY-----
-MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAuGfbszLsQ/JosnCIsGV3
-y6WrEg/YCmPaGMbU5590CJGUkYqxYs8kR2sHq32t/Nh6v4zXKEB1V5RiPz0hiwf
-CEPsKrSVr6bNpSNqnMHMwvJavCWbYY1g23yxBHg4WHaIEbyhJ3yjAlRZpyqJKw5b
-lSDwIUjt3CK3RLnEKsRmzAdPp8aGoMIFzEGKhb1b1lzZPJQlWz0BQn1bnPkC6yB7
-XkQ1AwUF1TboJPH2wnqC0EKAXT1KWLJpJF0gI6lMR7hH5XgL7cYg9dNahYK7VHri
-OVDC3jjz1Wv4SqRON8V/YkFMrH3CxJzh0CQ6r82MVGB+PLRfHN7S73JVqaTvaxJw
-3QIDAQAB
------END PUBLIC KEY-----
-PEM;
-
     public function __construct(
         private readonly StatusClient $statusClient,
         private readonly LoggerInterface $logger,
-        private readonly ?Config $config = null,
+        private readonly Config $config,
     ) {
     }
 
@@ -71,7 +60,7 @@ PEM;
                 'bog_order_id' => $bogOrderId,
             ]);
 
-            if ($this->verifySignature($callbackBody, $signature)) {
+            if ($this->verifySignature($callbackBody, $signature, $storeId)) {
                 $this->logger->info('BOG callback: signature verified successfully', [
                     'bog_order_id' => $bogOrderId,
                 ]);
@@ -129,26 +118,16 @@ PEM;
     }
 
     /**
-     * Verify SHA256withRSA signature using BOG's public key.
+     * Verify SHA256withRSA signature using the configured BOG public key.
      *
      * @param string $data The raw callback body
      * @param string $signature Base64-encoded signature from Callback-Signature header
+     * @param int $storeId Store scope for the configured key lookup
      */
-    private function verifySignature(string $data, string $signature): bool
+    private function verifySignature(string $data, string $signature, int $storeId = 0): bool
     {
-        // BUG-BOG-3 cutover fix: prefer the PEM injected via
-        // `shubo:payment:switch-to-prod:bog --rsa-key-path=...` and stored
-        // encrypted in system config. The const fallback exists only for
-        // sandbox/demo envs where the launch CLI hasn't been run; it is
-        // intentionally malformed and fail-closes via openssl_pkey_get_public().
-        $pem = $this->config !== null ? $this->config->getRsaPublicKey() : '';
-        if ($pem === '') {
-            $pem = self::BOG_PUBLIC_KEY;
-        }
-
-        $publicKey = openssl_pkey_get_public($pem);
+        $publicKey = $this->getPublicKey($storeId);
         if ($publicKey === false) {
-            $this->logger->error('BOG callback: failed to load public key for signature verification');
             return false;
         }
 
@@ -161,6 +140,38 @@ PEM;
         $result = openssl_verify($data, $decodedSignature, $publicKey, OPENSSL_ALGO_SHA256);
 
         return $result === 1;
+    }
+
+    /**
+     * Load the BOG RSA public key from encrypted system config.
+     *
+     * Returns false in two cases:
+     *  - Empty config: the expected pre-cutover state (info-level log).
+     *  - Malformed PEM: an operator misconfiguration (warning-level log).
+     *
+     * Both cases let `validate()` fall through to the status-API fallback.
+     */
+    private function getPublicKey(int $storeId = 0): \OpenSSLAsymmetricKey|false
+    {
+        $pem = $this->config->getRsaPublicKey($storeId);
+        if ($pem === '') {
+            $this->logger->info(
+                'BOG callback: RSA public key not configured, '
+                . 'signature verification skipped (fallback to status API)'
+            );
+            return false;
+        }
+
+        $publicKey = openssl_pkey_get_public($pem);
+        if ($publicKey === false) {
+            $this->logger->warning(
+                'BOG callback: configured RSA public key is not a valid PEM, '
+                . 'falling back to status API'
+            );
+            return false;
+        }
+
+        return $publicKey;
     }
 
     /**
