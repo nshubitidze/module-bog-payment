@@ -22,6 +22,7 @@ use Shubo\BogPayment\Controller\Adminhtml\Order\VoidPayment;
 use Shubo\BogPayment\Gateway\Config\Config;
 use Shubo\BogPayment\Gateway\Error\UserFacingErrorMapper;
 use Shubo\BogPayment\Gateway\Http\Client\CaptureClient;
+use Shubo\BogPayment\Gateway\Http\Client\ReversalClient;
 use Shubo\BogPayment\Gateway\Http\Client\StatusClient;
 use Shubo\BogPayment\Model\Ui\ConfigProvider;
 
@@ -131,10 +132,15 @@ class PaymentMethodGuardTest extends TestCase
         $this->orderRepository->expects(self::once())->method('get')->with(42)->willReturn($order);
         $this->orderRepository->expects(self::never())->method('save');
 
+        $reversalClient = $this->createMock(ReversalClient::class);
+        $reversalClient->expects(self::never())->method('reverse');
         $controller = new VoidPayment(
             $this->context,
             $this->orderRepository,
             $this->logger,
+            $this->createMock(Config::class),
+            $reversalClient,
+            $this->createMock(UserFacingErrorMapper::class),
         );
 
         $controller->execute();
@@ -150,10 +156,15 @@ class PaymentMethodGuardTest extends TestCase
         $this->orderRepository->expects(self::once())->method('get')->with(42)->willReturn($order);
         $this->orderRepository->expects(self::never())->method('save');
 
+        $reversalClient = $this->createMock(ReversalClient::class);
+        $reversalClient->expects(self::never())->method('reverse');
         $controller = new VoidPayment(
             $this->context,
             $this->orderRepository,
             $this->logger,
+            $this->createMock(Config::class),
+            $reversalClient,
+            $this->createMock(UserFacingErrorMapper::class),
         );
 
         $controller->execute();

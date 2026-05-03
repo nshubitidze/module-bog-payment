@@ -253,4 +253,20 @@ class Config extends GatewayConfig
     {
         return $this->getEffectiveApiUrl($storeId) . '/payment/authorization/approve/' . $orderId;
     }
+
+    /**
+     * BUG-BOG-5: Pre-auth cancellation (reversal) URL.
+     *
+     * BOG releases a held authorization at:
+     *   POST {api_url}/payment/authorization/cancel/{order_id}
+     * Body: {"description": "..."} (optional). Same auth/header pattern as
+     * the capture endpoint above. See
+     * `docs/design-bog-5-reversal-api-2026-05-03.md`.
+     *
+     * @param string $orderId BOG order ID
+     */
+    public function getCancelAuthorizationUrl(string $orderId, ?int $storeId = null): string
+    {
+        return $this->getEffectiveApiUrl($storeId) . '/payment/authorization/cancel/' . $orderId;
+    }
 }
